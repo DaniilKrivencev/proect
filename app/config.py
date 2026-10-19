@@ -31,6 +31,19 @@ MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN", "").strip()
 # Прокси для Telegram (на российских серверах Telegram заблокирован). Пусто — напрямую.
 # Пример: socks5://127.0.0.1:1080 — SSH-мост до зарубежного сервера (см. МОСТ_ДЛЯ_TELEGRAM.txt)
 TG_PROXY = os.getenv("TG_PROXY", "").strip() or None
+# Или свой адрес вместо api.telegram.org — мост на Cloudflare Workers, сервер не нужен.
+# Пример: https://lunka-tg.имя.workers.dev
+TG_API = os.getenv("TG_API", "").strip().rstrip("/")
+
+
+def tg_session(cls=None):
+    """Сессия для Telegram-бота с учётом моста (TG_API / TG_PROXY)."""
+    from aiogram.client.session.aiohttp import AiohttpSession
+    from aiogram.client.telegram import TelegramAPIServer
+    s = (cls or AiohttpSession)(proxy=TG_PROXY)
+    if TG_API:
+        s.api = TelegramAPIServer.from_base(TG_API)
+    return s
 # Кому бот логов разрешает подключиться (username в Telegram без @)
 LOG_OWNER = os.getenv("LOG_OWNER", "daniilkrivencev").strip().lstrip("@").lower()
 

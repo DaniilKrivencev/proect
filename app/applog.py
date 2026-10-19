@@ -19,7 +19,6 @@ from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
-from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 
@@ -204,7 +203,7 @@ async def run(listen: bool):
     if token():
         _loop = asyncio.get_running_loop()
         _queue = asyncio.Queue()
-        bot = Bot(token(), session=AiohttpSession(proxy=config.TG_PROXY),
+        bot = Bot(token(), session=config.tg_session(),
                   default=DefaultBotProperties(parse_mode="HTML"))
         tasks.append(_sender(bot))
         if listen:
@@ -230,6 +229,11 @@ def send_sync(text: str):
         tag = f"<b>[{html.escape(TENANT)}]</b> " if TENANT else ""
         data = json.dumps({"chat_id": cid, "text": (tag + text)[:4000], "parse_mode": "HTML"}).encode()
         path = f"/bot{token()}/sendMessage"
+        if config.TG_API:
+            req = urllib.request.Request(config.TG_API + path, data=data,
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10).read()
+            return
         if config.TG_PROXY:  # через мост: свой сокет через SOCKS-прокси
             import http.client
             import ssl

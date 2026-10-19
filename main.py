@@ -84,17 +84,17 @@ async def main():
     from app import api as _api
     _api.BOT_TOKEN = config.BOT_TOKEN
     # Сессия-маршрутизатор: сообщения клиентам из MAX (id < 0) сами уходят в MAX
-    bot = Bot(config.BOT_TOKEN, session=maxbot.RoutingSession(proxy=config.TG_PROXY),
+    bot = Bot(config.BOT_TOKEN, session=config.tg_session(maxbot.RoutingSession),
               default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
         me = await bot.get_me()
     except Exception as e:
-        hint = ("Проверьте мост: systemctl status tg-bridge" if config.TG_PROXY else
+        hint = ("Проверьте мост: адрес TG_API / TG_PROXY в .env" if (config.TG_PROXY or config.TG_API) else
                 "Если сервер в России — Telegram отсюда заблокирован, нужен мост: МОСТ_ДЛЯ_TELEGRAM.txt")
         fail(f"Telegram не принял токен или нет интернета: {e}\n{hint}")
     config.runtime["bot_username"] = me.username
-    if config.TG_PROXY:
-        log.info("Telegram работает через мост %s", config.TG_PROXY)
+    if config.TG_PROXY or config.TG_API:
+        log.info("Telegram работает через мост %s", config.TG_API or config.TG_PROXY)
     notify.bot = bot
 
     # Обновить кнопку «Кабинет» у владельца и мастеров (адрес туннеля мог смениться)
