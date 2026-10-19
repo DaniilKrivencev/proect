@@ -13,3 +13,4 @@ tenants_old_*/
 *.zip
 *.log
 logins.json
+Caddyfile

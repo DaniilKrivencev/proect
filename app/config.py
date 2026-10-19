@@ -18,6 +18,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 # Адрес кабинета мастера (https). Если пусто и TUNNEL=auto — создаётся автоматически.
 WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip().rstrip("/")
 TUNNEL = os.getenv("TUNNEL", "auto").strip().lower()
+# Свой адрес на сервере вместо туннеля: кабинет салона = https://<папка>.<DOMAIN>
+# (сертификат и маршрут делает Caddy, см. КАБИНЕТ_ПО_ПРЯМОМУ_АДРЕСУ.txt)
+DOMAIN = os.getenv("DOMAIN", "").strip().removeprefix("https://").removeprefix("http://").strip("/")
+if not WEBAPP_URL and DOMAIN and TENANT:
+    WEBAPP_URL = f"https://{TENANT}.{DOMAIN}"
 PORT = int(os.getenv("PORT", "8080"))
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow"))
 DB_PATH = TENANT_DIR / os.getenv("DB_FILE", "lunka.db")

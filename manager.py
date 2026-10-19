@@ -79,6 +79,27 @@ def tenants() -> dict[str, dict]:
     return out
 
 
+def write_caddy(ts: dict[str, dict]):
+    """Если в .env указан DOMAIN — составить Caddyfile: <папка>.<DOMAIN> → порт салона, и перезагрузить Caddy."""
+    from dotenv import dotenv_values
+    domain = (dotenv_values(BASE / ".env").get("DOMAIN") or "").strip()
+    domain = domain.removeprefix("https://").removeprefix("http://").strip("/")
+    if not domain:
+        return
+    blocks = [f"{slug}.{domain} {{\n    reverse_proxy 127.0.0.1:{c.get('PORT')}\n}}\n" for slug, c in ts.items()]
+    path = BASE / "Caddyfile"
+    text = "# Создаётся автоматически при запуске manager.py — руками не править\n\n" + "\n".join(blocks)
+    if not path.exists() or path.read_text(encoding="utf-8") != text:
+        path.write_text(text, encoding="utf-8")
+        if shutil.which("systemctl") and shutil.which("caddy"):
+            import subprocess
+            r = subprocess.run(["systemctl", "reload", "caddy"], capture_output=True, text=True)
+            print("Адреса кабинетов обновлены в Caddy." if r.returncode == 0 else
+                  f"Не удалось перезагрузить Caddy: {r.stderr.strip()}")
+    for slug in ts:
+        print(f"  Кабинет {slug}: https://{slug}.{domain}")
+
+
 def problems(ts: dict[str, dict]) -> list[str]:
     """Проверка, что салоны не мешают друг другу."""
     errs, tokens, ports, max_tokens = [], {}, {}, {}
@@ -570,6 +591,7 @@ def main():
     if errs:
         print("\nОШИБКА в настройках салонов:\n  " + "\n  ".join(errs))
         sys.exit(1)
+    write_caddy(ts)
     try:
         asyncio.run(supervise(ts))
     except KeyboardInterrupt:
