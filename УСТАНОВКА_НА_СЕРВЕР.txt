@@ -3,6 +3,8 @@
 =====================================================================
 
 ГЛАВНОЕ
+  • СЕРВЕР В РОССИИ? Telegram оттуда заблокирован — после шага 2 сделайте
+    МОСТ_ДЛЯ_TELEGRAM.txt, иначе бот в Telegram не ответит (MAX работает и так).
   • В репозитории GitHub только КОД. Салонов, баз, токенов там нет —
     их добавляют на сервере (вариант А) или переносят копией (вариант Б).
   • ПЕРЕД ЗАПУСКОМ НА СЕРВЕРЕ закройте run.bat на компьютере.
@@ -76,8 +78,8 @@
 cat > /etc/systemd/system/lunka.service <<'EOF'
 [Unit]
 Description=Lunka
-After=network-online.target
-Wants=network-online.target
+After=network-online.target tg-bridge.service
+Wants=network-online.target tg-bridge.service
 
 [Service]
 WorkingDirectory=/opt/lunka

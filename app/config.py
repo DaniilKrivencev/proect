@@ -28,6 +28,9 @@ DEV_USER_ID = int(os.getenv("DEV_USER_ID", "0") or 0)
 LOG_BOT_TOKEN = os.getenv("LOG_BOT_TOKEN", "").strip()
 # Бот салона в MAX (необязательно). Токен — на business.max.ru → Чат-боты → Расширенные настройки
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN", "").strip()
+# Прокси для Telegram (на российских серверах Telegram заблокирован). Пусто — напрямую.
+# Пример: socks5://127.0.0.1:1080 — SSH-мост до зарубежного сервера (см. МОСТ_ДЛЯ_TELEGRAM.txt)
+TG_PROXY = os.getenv("TG_PROXY", "").strip() or None
 # Кому бот логов разрешает подключиться (username в Telegram без @)
 LOG_OWNER = os.getenv("LOG_OWNER", "daniilkrivencev").strip().lstrip("@").lower()
 

@@ -19,6 +19,7 @@ from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 
@@ -203,7 +204,8 @@ async def run(listen: bool):
     if token():
         _loop = asyncio.get_running_loop()
         _queue = asyncio.Queue()
-        bot = Bot(token(), default=DefaultBotProperties(parse_mode="HTML"))
+        bot = Bot(token(), session=AiohttpSession(proxy=config.TG_PROXY),
+                  default=DefaultBotProperties(parse_mode="HTML"))
         tasks.append(_sender(bot))
         if listen:
             try:
@@ -227,7 +229,21 @@ def send_sync(text: str):
     try:
         tag = f"<b>[{html.escape(TENANT)}]</b> " if TENANT else ""
         data = json.dumps({"chat_id": cid, "text": (tag + text)[:4000], "parse_mode": "HTML"}).encode()
-        req = urllib.request.Request(f"https://api.telegram.org/bot{token()}/sendMessage", data=data,
+        path = f"/bot{token()}/sendMessage"
+        if config.TG_PROXY:  # через мост: свой сокет через SOCKS-прокси
+            import http.client
+            import ssl
+            from python_socks.sync import Proxy
+            host = "api.telegram.org"
+            ctx = ssl.create_default_context()
+            raw = Proxy.from_url(config.TG_PROXY).connect(dest_host=host, dest_port=443, timeout=10)
+            conn = http.client.HTTPSConnection(host, timeout=10, context=ctx)
+            conn.sock = ctx.wrap_socket(raw, server_hostname=host)
+            conn.request("POST", path, body=data, headers={"Content-Type": "application/json"})
+            conn.getresponse().read()
+            conn.close()
+            return
+        req = urllib.request.Request("https://api.telegram.org" + path, data=data,
                                      headers={"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=10).read()
     except Exception:

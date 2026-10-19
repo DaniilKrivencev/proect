@@ -1,0 +1,83 @@
+=====================================================================
+  МОСТ ДЛЯ TELEGRAM (когда основной сервер в России)
+=====================================================================
+
+ЗАЧЕМ
+  С российских серверов Telegram заблокирован: бот пишет
+  «Request timeout error». Решение — маленький ЗАРУБЕЖНЫЙ сервер-«мост».
+  Через него идут ТОЛЬКО запросы к Telegram. Сам сервис, базы салонов и MAX
+  остаются на российском сервере. Задержка +30–80 мс — клиенты не заметят.
+
+  Как это работает: российский сервер держит зашифрованное SSH-соединение
+  с мостом. На мосту НИЧЕГО устанавливать не нужно — подойдёт любой
+  самый дешёвый Linux-сервер за границей (Финляндия, Нидерланды, Германия,
+  Казахстан…), 1 ядро / 512 МБ–1 ГБ, Ubuntu.
+
+
+1. ВЗЯТЬ ЗАРУБЕЖНЫЙ СЕРВЕР
+   Любой хостинг, самый дешёвый тариф, Ubuntu 24.04, без ПО.
+   Запишите его IP и пароль root. Больше с ним ничего делать не нужно.
+
+
+2. НА РОССИЙСКОМ СЕРВЕРЕ (все команды — там)
+
+   Вместо 1.2.3.4 впишите IP ЗАРУБЕЖНОГО сервера:
+
+     BRIDGE=1.2.3.4
+
+   Ключ для входа на мост без пароля (просто Enter):
+
+     ssh-keygen -t ed25519 -N "" -f /root/.ssh/bridge
+
+   Отдать ключ мосту (спросит yes и ПАРОЛЬ ЗАРУБЕЖНОГО сервера — один раз):
+
+     ssh-copy-id -i /root/.ssh/bridge.pub root@$BRIDGE
+
+   Проверка — должно напечатать 302:
+
+     ssh -i /root/.ssh/bridge root@$BRIDGE "curl -s -o /dev/null -w '%{http_code}' https://api.telegram.org"; echo
+
+
+3. ВКЛЮЧИТЬ МОСТ (вставьте целиком, от cat до последней строки)
+
+cat > /etc/systemd/system/tg-bridge.service <<EOF
+[Unit]
+Description=Telegram bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/ssh -N -D 127.0.0.1:1080 -i /root/.ssh/bridge -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new root@$BRIDGE
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now tg-bridge
+
+   Проверка — должно напечатать 302:
+
+     curl -s -x socks5h://127.0.0.1:1080 -o /dev/null -w "%{http_code}\n" https://api.telegram.org
+
+
+4. СКАЗАТЬ ПРОГРАММЕ ХОДИТЬ ЧЕРЕЗ МОСТ
+
+     echo 'TG_PROXY=socks5://127.0.0.1:1080' >> /opt/lunka/.env
+     cd /opt/lunka && .venv/bin/pip install -r requirements.txt
+
+   Запуск как обычно. В окне появится «Telegram работает через мост».
+   Если уже настроен автозапуск:  systemctl restart lunka
+
+
+ЕСЛИ ЧТО-ТО НЕ ТАК
+     systemctl status tg-bridge          — работает ли мост
+     journalctl -u tg-bridge -n 30       — последние сообщения моста
+   • Мост упал — он сам переподключается каждые 5 секунд.
+   • Зарубежный сервер пропал/заблокирован — возьмите новый и повторите
+     шаги 2–3 с новым IP (шаг 4 не нужен). Данные салонов не затронуты.
+   • Убрать мост: удалите строку TG_PROXY из /opt/lunka/.env
+     и выполните  systemctl disable --now tg-bridge
+
+   MAX через мост НЕ ходит — он работает напрямую с российского сервера.
