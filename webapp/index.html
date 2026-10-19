@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <title>Кабинет салона</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Manrope:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <!-- Логотип: ноготь с лункой -->
+      <svg class="mark" viewBox="0 0 40 48" aria-hidden="true">
+        <path d="M6 20C6 10.6 12.3 4 20 4s14 6.6 14 16v18a6 6 0 0 1-6 6H12a6 6 0 0 1-6-6z" class="mark-nail"/>
+        <path d="M8.5 40.5C9.5 33.5 14 29.5 20 29.5s10.5 4 11.5 11z" class="mark-moon"/>
+      </svg>
+      <div class="brand-text">
+        <div class="salon-name" id="salonName">&nbsp;</div>
+        <div class="who" id="whoAmI"></div>
+      </div>
+      <button class="icon-btn" id="themeBtn" aria-label="Сменить тему"></button>
+    </div>
+    <div id="next"></div>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <main>
+    <!-- ЗАПИСИ -->
+    <section id="tab-bookings" class="tab active">
+      <div class="chips scroll" id="masterChips"></div>
+      <div class="days" id="days"></div>
+      <div class="day-head">
+        <div>
+          <div class="day-title" id="dayTitle"></div>
+          <div class="muted small" id="dayHours"></div>
+        </div>
+        <button class="ghost small" id="toggleOff" hidden>Сделать выходным</button>
+      </div>
+      <div id="bookingList" class="list"></div>
+      <button class="fab" id="addBooking">+ Записать</button>
+    </section>
+
+    <!-- МАСТЕРА (владелец) -->
+    <section id="tab-masters" class="tab">
+      <p class="muted small">Клиенты выбирают мастера при записи. Отметьте каждому его услуги и график, а потом отправьте ссылку-приглашение — так мастер будет получать свои записи в Telegram.</p>
+      <div id="masterList" class="list"></div>
+      <button class="primary wide" id="addMaster">+ Добавить мастера</button>
+    </section>
+
+    <!-- ЧАТЫ (владелец и администраторы) -->
+    <section id="tab-chats" class="tab">
+      <p class="muted small">Сообщения, которые клиентки пишут боту. Нажмите на чат, чтобы прочитать и ответить — клиентка получит ответ в Telegram от имени салона.</p>
+      <div id="chatList" class="list"></div>
+    </section>
+
+    <!-- КЛИЕНТЫ -->
+    <section id="tab-clients" class="tab">
+      <input id="clientSearch" class="search" placeholder="Поиск по имени или телефону">
+      <div class="chips">
+        <button class="chip active" data-filter="all">Все</button>
+        <button class="chip" data-filter="sleeping">Давно не были</button>
+      </div>
+      <div id="clientList" class="list"></div>
+    </section>
+
+    <!-- МОЙ ГРАФИК (мастер) -->
+    <section id="tab-myschedule" class="tab">
+      <div class="card">
+        <h3>Мой график</h3>
+        <p class="muted small">В эти часы клиенты могут записаться к вам. Отдельный выходной отмечается во вкладке «Записи».</p>
+        <div id="mySchedule"></div>
+        <button class="primary wide" id="saveMySchedule">Сохранить график</button>
+      </div>
+    </section>
+
+    <!-- САЛОН (владелец) -->
+    <section id="tab-salon" class="tab">
+      <div class="card">
+        <h3>Ссылка для записи</h3>
+        <p class="muted small">Поставьте её в профиль салона, VK, на Яндекс Карты и в 2ГИС.</p>
+        <div class="link" id="clientLink"></div>
+        <div class="row">
+          <button class="ghost" id="copyLink">Скопировать</button>
+          <button class="primary" id="shareLink">Поделиться</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Услуги и цены</h3>
+        <p class="muted small">Длительность нужна, чтобы правильно считать свободное время — для долгих процедур ставьте с запасом.</p>
+        <div id="serviceList" class="list flat"></div>
+        <button class="ghost wide" id="addService">+ Добавить услугу</button>
+      </div>
+      <div class="card">
+        <h3>О салоне</h3>
+        <label>Название<input id="pName" maxlength="80"></label>
+        <label>Адрес<input id="pAddress" maxlength="200" placeholder="ул. Цветочная, 7, вход со двора"></label>
+        <label>Телефон салона<input id="pPhone" type="tel" maxlength="30" placeholder="+7 900 123-45-67"></label>
+        <label>Пара слов для клиентов<textarea id="pAbout" maxlength="500" rows="2" placeholder=""></textarea></label>
+        <label>Шаг записи
+          <select id="pStep">
+            <option value="15">каждые 15 минут</option>
+            <option value="30">каждые 30 минут</option>
+            <option value="60">каждый час</option>
+          </select>
+        </label>
+        <button class="primary wide" id="saveSalon">Сохранить</button>
+      </div>
+      <div class="card">
+        <h3>Оформление</h3>
+        <p class="muted small">«Авто» — тема меняется вместе с телефоном. Выбор запоминается на этом устройстве.</p>
+        <div class="seg" id="themeSeg">
+          <button data-theme="auto">Авто</button>
+          <button data-theme="light">Светлая</button>
+          <button data-theme="dark">Тёмная</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Администраторы</h3>
+        <p class="muted small">Директор или администратор увидит все записи и сможет отвечать клиенткам. Отправьте ему одноразовую ссылку-приглашение.</p>
+        <div class="small" id="adminList"></div>
+        <button class="ghost wide" id="inviteAdmin">Пригласить администратора</button>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabs" id="tabs"></nav>
+
+  <div class="sheet-bg" id="sheetBg"></div>
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true"></div>
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

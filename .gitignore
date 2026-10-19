@@ -1,0 +1,15 @@
+.env
+.venv/
+*.db
+*.db-*
+cloudflared.exe
+__pycache__/
+tunnel.log
+tenants/
+shared/
+status.json
+backups/
+tenants_old_*/
+*.zip
+*.log
+logins.json
