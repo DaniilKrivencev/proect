@@ -1,0 +1,134 @@
+=====================================================================
+  УСТАНОВКА «ЛУНКИ» НА СЕРВЕР (Ubuntu 22.04 / 24.04) — С НУЛЯ
+=====================================================================
+
+ГЛАВНОЕ
+  • В репозитории GitHub только КОД. Салонов, баз, токенов там нет —
+    их добавляют на сервере (вариант А) или переносят копией (вариант Б).
+  • ПЕРЕД ЗАПУСКОМ НА СЕРВЕРЕ закройте run.bat на компьютере.
+    Один и тот же бот в двух местах сразу = бот глючит у клиентов.
+  • Команды вводятся в консоли сервера по одной, по порядку.
+    Подключиться: «Консоль» в панели хостинга или  ssh root@IP_СЕРВЕРА
+
+
+1. ПОДГОТОВИТЬ СЕРВЕР (один раз)
+
+     apt update && apt install -y git python3 python3-venv curl
+     curl -L -o /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+     chmod +x /usr/local/bin/cloudflared
+
+   cloudflared нужен для адреса кабинета салона.
+   Если сервер с 1 ГБ памяти — добавьте подкачку (страховка от нехватки памяти):
+
+     fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+     echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+
+2. СКАЧАТЬ КОД И УСТАНОВИТЬ БИБЛИОТЕКИ
+
+     git clone https://github.com/DaniilKrivencev/proect /opt/lunka
+     cd /opt/lunka
+     python3 -m venv .venv
+     .venv/bin/pip install -r requirements.txt
+
+   Если репозиторий приватный, git спросит логин и пароль. Логин — ваш ник
+   на GitHub, вместо пароля — токен: GitHub → Settings → Developer settings →
+   Personal access tokens → Generate new token (доступ: Contents — Read).
+
+
+3. ДОБАВИТЬ САЛОНЫ — выберите ОДИН вариант
+
+   ВАРИАНТ А — с нуля (на компьютере были только тесты)
+
+     .venv/bin/python manager.py
+
+   Программа сама спросит: название салона, имя папки латиницей (zarina),
+   сферу (маникюр / парикмахерская), токен бота от @BotFather и токен
+   бота логов — и запустится.
+   Ещё салон:    .venv/bin/python manager.py add
+   Бот в MAX:    .venv/bin/python manager.py max
+
+   ВАРИАНТ Б — перенести то, что уже настроено на компьютере
+
+     На компьютере:
+       1) очистить_сервис.bat → вариант 1 (убрать тестовых клиентов, оставить ботов)
+       2) сделать_копию.bat   → файл появится в папке backups
+       3) в «Командной строке» из папки проекта:
+          scp backups\backup_ДАТА.zip root@IP_СЕРВЕРА:/opt/lunka/
+     На сервере:
+          cd /opt/lunka
+          .venv/bin/python manager.py restore backup_ДАТА.zip
+          git checkout -- .          ← код снова как в GitHub (данные не трогает)
+          .venv/bin/python manager.py list    ← должны быть видны все салоны
+          .venv/bin/python manager.py
+
+
+4. ПРОВЕРИТЬ
+   • В боте логов напишите /status — все салоны 🟢.
+   • Сделайте тестовую запись и откройте кабинет.
+   • Всё хорошо — остановите программу: Ctrl+C.
+
+
+5. ВКЛЮЧИТЬ АВТОЗАПУСК
+   Без этого сервис выключится, как только закроете консоль.
+   Скопируйте и вставьте ЦЕЛИКОМ, от cat до последней строки:
+
+cat > /etc/systemd/system/lunka.service <<'EOF'
+[Unit]
+Description=Lunka
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/lunka
+ExecStart=/opt/lunka/.venv/bin/python manager.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now lunka
+
+   Теперь сервис сам поднимается после перезагрузки сервера и после сбоя.
+
+
+ПОЛЕЗНЫЕ КОМАНДЫ
+     systemctl status lunka       — работает ли
+     journalctl -u lunka -f       — что происходит прямо сейчас (выход: Ctrl+C)
+     systemctl restart lunka      — перезапустить
+     systemctl stop lunka         — остановить
+
+
+ОБНОВИТЬ КОД (после правок, загруженных в GitHub)
+
+     cd /opt/lunka
+     .venv/bin/python manager.py backup
+     git pull
+     .venv/bin/pip install -r requirements.txt
+     systemctl restart lunka
+
+   Проверка — /status в боте логов. Если что-то сломалось, вернуть прошлую версию:
+     git log --oneline            ← найти код прошлой версии (например 246f30c)
+     git checkout 246f30c -- .  && systemctl restart lunka
+   Данные салонов обновление не трогает.
+
+
+НОВЫЙ ЗАКАЗЧИК
+   Программа задаёт вопросы, поэтому на время добавления сервис останавливаем:
+
+     cd /opt/lunka
+     systemctl stop lunka
+     .venv/bin/python manager.py add
+     systemctl start lunka
+
+   Подробно про заказчиков — НОВЫЙ_ЗАКАЗЧИК.txt.
+   Переезд на другой сервер — ПЕРЕЕЗД_НА_ДРУГОЙ_СЕРВЕР.txt.
+
+
+КОПИИ
+   Каждую ночь в 4:00 сервис сам делает копию в /opt/lunka/backups
+   (хранятся последние 14). Раз в неделю скачивайте свежую к себе:
+     scp root@IP_СЕРВЕРА:/opt/lunka/backups/backup_ДАТА.zip .
+   В копии токены и телефоны клиентов — храните её как пароль.
