@@ -52,8 +52,12 @@ assert res["active"] == len(data["services"]) == res["bookable"], res
 assert res["bookings"] == 1, "старая запись пропала"
 assert res["for_botox"] == ["Косметолог Кристина"], res["for_botox"]
 assert set(res["for_japan"]) == {"Nasirova Burulai", "Жанна", "Миронова Мария"}, res["for_japan"]
-assert "Френч" in res["masters"]["Жанна"] and "Френч" not in res["masters"]["Nasirova Burulai"]
-assert "Ремонт ногтя" in res["masters"]["Миронова Мария"]
+counts = {n: len(s) for n, s in res["masters"].items()}
+assert counts["Nasirova Burulai"] == 21 and counts["Жанна"] == 14, counts
+assert counts["Косметолог Кристина"] == 22 and counts["Миронова Мария"] == 18, counts
+assert "Френч" in res["masters"]["Nasirova Burulai"] and "Френч" not in res["masters"]["Жанна"]
+assert "Ремонт ногтя" in res["masters"]["Миронова Мария"] and "Дизайн Омбре" not in res["masters"]["Миронова Мария"]
+assert "Ламинирование бровей" in res["masters"]["Косметолог Кристина"]
 assert "NAME=Стиль и Я" in (t / "tenant.env").read_text(encoding="utf-8")
 for name, svcs in res["masters"].items():
     if name != "Тест":

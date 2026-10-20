@@ -145,7 +145,7 @@ def import_salon(slug: str, file: str):
         if data.get("salon_name"):
             con.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('salon_name', ?)", (data["salon_name"],))
         # услуги: новые добавить, существующие обновить, лишние скрыть (история записей сохраняется)
-        names, by_cat = set(), {}
+        names, by_cat, by_name = set(), {}, {}
         for name, price, dur, cat in data["services"]:
             names.add(name)
             row = con.execute("SELECT id FROM services WHERE name=?", (name,)).fetchone()
@@ -156,6 +156,7 @@ def import_salon(slug: str, file: str):
                 sid = con.execute("INSERT INTO services (name, price, duration, price_from, active) VALUES (?,?,?,1,1)",
                                   (name, price, dur)).lastrowid
             by_cat.setdefault(cat, []).append(sid)
+            by_name[name] = sid
         for r in con.execute("SELECT id, name FROM services WHERE active=1").fetchall():
             if r["name"] not in names:
                 con.execute("UPDATE services SET active=0 WHERE id=?", (r["id"],))
@@ -172,10 +173,15 @@ def import_salon(slug: str, file: str):
                 for wd in range(6):
                     con.execute('INSERT OR REPLACE INTO schedule (master_id, weekday, start, "end") VALUES (?,?,?,?)',
                                 (mid, wd, "10:00", "18:00" if wd == 5 else "20:00"))
+            # услуги мастера: точным списком названий ("services") и/или целыми группами ("cats")
+            sids = [sid for cat in m.get("cats", []) for sid in by_cat.get(cat, [])]
+            for n in m.get("services", []):
+                if n not in by_name:
+                    raise SystemExit(f"У мастера {m['name']} услуга «{n}» не найдена в прайсе — проверьте название")
+                sids.append(by_name[n])
             con.execute("DELETE FROM master_services WHERE master_id=?", (mid,))
-            for cat in m["cats"]:
-                for sid in by_cat.get(cat, []):
-                    con.execute("INSERT OR IGNORE INTO master_services (master_id, service_id) VALUES (?,?)", (mid, sid))
+            for sid in sids:
+                con.execute("INSERT OR IGNORE INTO master_services (master_id, service_id) VALUES (?,?)", (mid, sid))
     con.close()
     if data.get("salon_name") and cfg.get("NAME") != data["salon_name"]:
         cfg["NAME"] = data["salon_name"]
