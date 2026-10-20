@@ -22,6 +22,7 @@
   python manager.py restore backups/backup_….zip — развернуть копию (на новом сервере)
   python manager.py rename salon1 zarina — переименовать папку салона
   python manager.py reset    — очистить сервис от тестовых данных (перед выкладкой на сервер)
+  python manager.py import zarina salons/zarina.json — заполнить салон: название, прайс, мастера
 """
 import asyncio
 import html
@@ -120,6 +121,68 @@ def problems(ts: dict[str, dict]) -> list[str]:
             errs.append(f"{slug} и {ports[port]} используют один порт {port}")
         ports[port] = slug
     return errs
+
+
+def import_salon(slug: str, file: str):
+    """Заполнить салон из файла: название, прайс, мастера и их услуги (salons/<салон>.json).
+    Можно запускать повторно: услуги и мастера обновляются по названию/имени, записи и клиенты не трогаются."""
+    import secrets
+    from datetime import datetime
+    cfg = tenants().get(slug)
+    if not cfg:
+        print(f"Салона «{slug}» нет. Список: python manager.py list")
+        return
+    dbf = TENANTS / slug / cfg.get("DB_FILE", "lunka.db")
+    if not dbf.exists():
+        print("База салона ещё не создана — запустите сервис хотя бы один раз, потом повторите.")
+        return
+    data = json.loads(Path(file).read_text(encoding="utf-8"))
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    con = sqlite3.connect(dbf, timeout=30)
+    con.row_factory = sqlite3.Row
+    hidden = 0
+    with con:
+        if data.get("salon_name"):
+            con.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('salon_name', ?)", (data["salon_name"],))
+        # услуги: новые добавить, существующие обновить, лишние скрыть (история записей сохраняется)
+        names, by_cat = set(), {}
+        for name, price, dur, cat in data["services"]:
+            names.add(name)
+            row = con.execute("SELECT id FROM services WHERE name=?", (name,)).fetchone()
+            if row:
+                sid = row["id"]
+                con.execute("UPDATE services SET price=?, duration=?, price_from=1, active=1 WHERE id=?", (price, dur, sid))
+            else:
+                sid = con.execute("INSERT INTO services (name, price, duration, price_from, active) VALUES (?,?,?,1,1)",
+                                  (name, price, dur)).lastrowid
+            by_cat.setdefault(cat, []).append(sid)
+        for r in con.execute("SELECT id, name FROM services WHERE active=1").fetchall():
+            if r["name"] not in names:
+                con.execute("UPDATE services SET active=0 WHERE id=?", (r["id"],))
+                hidden += 1
+        # мастера: по имени; новым — график пн–пт 10–20, сб 10–18 (поменяете в кабинете)
+        for m in data["masters"]:
+            row = con.execute("SELECT id FROM masters WHERE name=? AND active=1", (m["name"],)).fetchone()
+            if row:
+                mid = row["id"]
+                con.execute("UPDATE masters SET spec=? WHERE id=?", (m.get("spec", ""), mid))
+            else:
+                mid = con.execute("INSERT INTO masters (name, spec, invite, created_at) VALUES (?,?,?,?)",
+                                  (m["name"], m.get("spec", ""), secrets.token_hex(5), now)).lastrowid
+                for wd in range(6):
+                    con.execute('INSERT OR REPLACE INTO schedule (master_id, weekday, start, "end") VALUES (?,?,?,?)',
+                                (mid, wd, "10:00", "18:00" if wd == 5 else "20:00"))
+            con.execute("DELETE FROM master_services WHERE master_id=?", (mid,))
+            for cat in m["cats"]:
+                for sid in by_cat.get(cat, []):
+                    con.execute("INSERT OR IGNORE INTO master_services (master_id, service_id) VALUES (?,?)", (mid, sid))
+    con.close()
+    if data.get("salon_name") and cfg.get("NAME") != data["salon_name"]:
+        cfg["NAME"] = data["salon_name"]
+        write_tenant(slug, cfg)
+    print(f"✅ «{data.get('salon_name', slug)}»: услуг {len(data['services'])}, мастеров {len(data['masters'])}"
+          + (f", старых услуг скрыто {hidden}" if hidden else "") + ".")
+    print("   Ссылки-приглашения мастеров — в кабинете → «Мастера». График поправьте там же.")
 
 
 def next_port(ts: dict[str, dict]) -> int:
@@ -592,6 +655,12 @@ def main():
             for slug, c in tenants().items():
                 print(f"  {slug}  — {c.get('NAME', '')}")
             rename_tenant(ask("Какую папку переименовать: ").lower(), ask("Новое имя латиницей (например zarina): ").lower())
+        return
+    if cmd == "import":
+        if len(sys.argv) < 4:
+            print("Как: python manager.py import zarina salons/zarina.json")
+            return
+        import_salon(sys.argv[2].lower(), sys.argv[3])
         return
     if cmd == "list":
         for slug, c in tenants().items():
