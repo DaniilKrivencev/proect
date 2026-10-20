@@ -192,9 +192,37 @@ async def show_master_home(message: Message, master: dict):
         reply_markup=kb(cabinet_button() + [[btn("📅 Мои записи на сегодня и завтра", "today")]]))
 
 
+DEV_MODE_NAMES = {"client": "👤 Клиент", "owner": "👑 Хозяин"}
+
+
+async def dev_enter(message: Message, state: FSMContext):
+    """Техподдержка пришла из админ-бота: показать меню той роли, которую она выбрала."""
+    from aiogram.types import MenuButtonDefault, ReplyKeyboardRemove
+    uid = message.from_user.id
+    mode = db.dev_mode(uid) or ""
+    if mode.startswith("master:"):
+        m = db.master_by_tg(uid)
+        title = f"✂️ Мастер {m['name']}" if m else "✂️ Мастер (не найден — выберите другого в админ-боте)"
+    else:
+        title = DEV_MODE_NAMES.get(mode, "обычный")
+    note = f"🛠 Режим техподдержки: <b>{html.escape(title)}</b> в «{html.escape(salon()['salon_name'])}»"
+    if mode == "owner" or mode.startswith("master:"):
+        await message.answer(note, reply_markup=ReplyKeyboardRemove())
+    else:
+        try:  # клиенту кнопка «Кабинет» не положена
+            await message.bot.set_chat_menu_button(chat_id=uid, menu_button=MenuButtonDefault())
+        except Exception:
+            pass
+        await message.answer(note)
+    await start_plain(message, state)
+
+
 @router.message(CommandStart(deep_link=True))
 async def start_deep(message: Message, command: CommandObject, state: FSMContext):
     await state.clear()
+    if command.args == "dev" and message.from_user.id == db.dev_id():
+        await dev_enter(message, state)
+        return
     a = re.fullmatch(r"admin_([0-9a-f]+)", command.args or "")
     if a and db.admins() and a.group(1) == db.settings().get("admin_invite"):
         db.add_admin(message.from_user.id, full_name(message.from_user))
@@ -732,7 +760,9 @@ async def keep_cb(cb: CallbackQuery):
 @router.callback_query(MCancel.filter())
 async def staff_cancel(cb: CallbackQuery, callback_data: MCancel):
     b = db.get_booking(callback_data.b)
-    allowed = b and (db.is_admin(cb.from_user.id) or b["master_tg"] == cb.from_user.id)
+    me = db.master_by_tg(cb.from_user.id)
+    allowed = b and (db.is_admin(cb.from_user.id) or b["master_tg"] == cb.from_user.id
+                     or (me and me["id"] == b.get("master_id")))
     if not allowed:
         await cb.answer("Запись не найдена", show_alert=True)
         return
@@ -797,7 +827,7 @@ async def start_reply(cb: CallbackQuery, callback_data: Reply, state: FSMContext
     hist = history_text(client["id"])
     await cb.message.answer(
         f"✍️ <b>Режим ответа: {html.escape(client['name'])}</b>"
-        + (f" · {client['phone']}" if client["phone"] else "")
+        + (f" · {client['phone'] if not db.dev_mode(cb.from_user.id) else 'телефон скрыт'}" if client["phone"] else "")
         + (f"\n\nПоследние сообщения:\n{hist}" if hist else "")
         + "\n\nВсё, что вы сейчас напишете (текст или фото), получит клиентка от имени салона.\n"
           f"Когда закончите — нажмите «{B_END_CHAT}» {below(cb.message.chat.id)}.",

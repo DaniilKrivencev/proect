@@ -8,7 +8,7 @@ import secrets
 from datetime import date, timedelta
 
 from aiogram.utils.web_app import safe_parse_webapp_init_data
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -21,7 +21,7 @@ TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 # ---------- кто открыл кабинет ----------
-def current_user(x_init_data: str = Header(default=""), x_login: str = Header(default="")) -> dict:
+def current_user(response: Response, x_init_data: str = Header(default=""), x_login: str = Header(default="")) -> dict:
     if x_login:  # вход по личной ссылке (сотрудники из MAX, браузер)
         tg_id = db.login_user(x_login)
         if tg_id is None:
@@ -40,14 +40,54 @@ def current_user(x_init_data: str = Header(default=""), x_login: str = Header(de
             raise HTTPException(401, "Нет данных пользователя")
         tg_id = data.user.id
         name = " ".join(filter(None, [data.user.first_name, data.user.last_name]))
+    support = bool(db.dev_mode(tg_id))  # техподдержка: телефоны клиентов ей не показываем
+    if support:
+        response.headers["x-support"] = "1"
     if db.is_admin(tg_id):
         if not name:
-            name = (db.one("SELECT name FROM admins WHERE tg_id=?", (tg_id,)) or {}).get("name", "")
-        return {"role": "admin", "tg_id": tg_id, "master_id": None, "name": name}
+            name = (db.one("SELECT name FROM admins WHERE tg_id=?", (tg_id,)) or {}).get("name", "") or "Техподдержка"
+        return {"role": "admin", "tg_id": tg_id, "master_id": None, "name": name, "support": support}
     m = db.master_by_tg(tg_id)
     if m:
-        return {"role": "master", "tg_id": tg_id, "master_id": m["id"], "name": m["name"]}
+        return {"role": "master", "tg_id": tg_id, "master_id": m["id"], "name": m["name"], "support": support}
     raise HTTPException(403, "Кабинет доступен только сотрудникам салона")
+
+
+# ---------- техподдержка не видит телефоны клиентов ----------
+import json as _json  # noqa: E402
+
+from starlette.requests import Request  # noqa: E402
+
+PHONE_KEYS = {"phone", "client_phone"}
+
+
+def mask_phone(p: str) -> str:
+    digits = re.sub(r"\D", "", p or "")
+    return f"+7 *** ***-**-{digits[-2:]}" if len(digits) >= 4 else ("скрыт" if p else "")
+
+
+def _mask(obj, parent: str = ""):
+    if isinstance(obj, dict):
+        return {k: (mask_phone(v) if k in PHONE_KEYS and isinstance(v, str) and parent != "salon"
+                    else _mask(v, k)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_mask(x, parent) for x in obj]
+    return obj
+
+
+@app.middleware("http")
+async def hide_phones_from_support(request: Request, call_next):
+    response = await call_next(request)
+    if response.headers.get("x-support") != "1":
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    try:
+        data = _mask(_json.loads(body))
+        body = _json.dumps(data, ensure_ascii=False).encode()
+    except Exception:
+        pass
+    headers = {k: v for k, v in response.headers.items() if k.lower() not in ("content-length", "x-support")}
+    return Response(body, status_code=response.status_code, headers=headers, media_type="application/json")
 
 
 def admin_only(u=Depends(current_user)) -> dict:
@@ -97,6 +137,7 @@ def me(u=Depends(current_user)):
             "link": link, "next": nxt,
             "link_max": f"https://max.ru/{runtime['max_username']}" if runtime.get("max_username") else "", "today": now.date().isoformat(),
             "unread_chats": unread if u["role"] == "admin" else 0,
+            "support_access": bool(db.dev_id()) if u["role"] == "admin" else False,
             "stats": {"month_revenue": stats["revenue"], "month_visits": stats["visits"],
                       "upcoming": upcoming["n"], "clients": clients["n"], "masters": len(db.masters())}}
 
@@ -381,8 +422,9 @@ def edit_client(client_id: int, n: ClientIn, u=Depends(current_user)):
     c = db.one("SELECT * FROM clients WHERE id=?", (client_id,))
     if not c:
         raise HTTPException(404, "Клиент не найден")
+    phone = c["phone"] if (u.get("support") or n.phone is None) else n.phone  # техподдержка видит маску — не затираем
     db.ex("UPDATE clients SET note=?, name=?, phone=? WHERE id=?",
-          (n.note, (n.name or c["name"]).strip(), (n.phone if n.phone is not None else c["phone"]).strip(), client_id))
+          (n.note, (n.name or c["name"]).strip(), phone.strip(), client_id))
     return {"ok": True}
 
 

@@ -5,7 +5,7 @@ import sqlite3
 import threading
 from datetime import datetime
 
-from .config import DB_PATH, TZ
+from .config import DB_PATH, SHARED_DIR, TZ
 from .niche import N
 
 _lock = threading.RLock()
@@ -184,7 +184,36 @@ def slot_step() -> int:
     return int(settings().get("slot_step", 30))
 
 
+# ---------- режим разработчика ----------
+# Аккаунт разработчика (сохраняет админ-бот в shared/admin.json) может войти в ЛЮБОЙ салон
+# в роли клиента, хозяина или мастера. Режим салона хранится в settings: dev_mode =
+# "client" | "owner" | "master:<id>" | "" (обычный). Другим людям это ни на что не влияет.
+_dev = {"mtime": None, "id": 0}
+
+
+def dev_id() -> int:
+    f = SHARED_DIR / "admin.json"
+    try:
+        mt = f.stat().st_mtime
+        if mt != _dev["mtime"]:
+            import json
+            _dev.update(mtime=mt, id=int(json.loads(f.read_text(encoding="utf-8")).get("dev_id") or 0))
+    except Exception:
+        _dev.update(mtime=None, id=0)
+    return _dev["id"]
+
+
+def dev_mode(tg_id: int) -> str | None:
+    """Режим разработчика для этого человека; None — обычный пользователь или режим не выбран."""
+    if not tg_id or tg_id != dev_id():
+        return None
+    return (one("SELECT value FROM settings WHERE key='dev_mode'") or {}).get("value") or None
+
+
 def is_admin(tg_id: int) -> bool:
+    mode = dev_mode(tg_id)
+    if mode:
+        return mode == "owner"
     return one("SELECT 1 FROM admins WHERE tg_id=?", (tg_id,)) is not None
 
 
@@ -206,6 +235,12 @@ def get_master(master_id: int) -> dict | None:
 
 
 def master_by_tg(tg_id: int) -> dict | None:
+    mode = dev_mode(tg_id)
+    if mode:
+        if not mode.startswith("master:"):
+            return None
+        m = one("SELECT * FROM masters WHERE id=? AND active=1", (int(mode.split(":")[1]),))
+        return {**m, "tg_id": tg_id} if m else None   # разработчик «в шкуре» этого мастера
     return one("SELECT * FROM masters WHERE tg_id=? AND active=1", (tg_id,))
 
 

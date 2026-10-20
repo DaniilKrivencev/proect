@@ -532,6 +532,12 @@ async function loadSalon() {
   const s = state.me.salon;
   $("clientLink").textContent = state.me.link_max ? `Telegram: ${state.me.link}\nMAX: ${state.me.link_max}` : (state.me.link || "Ссылка появится, когда бот запущен");
   $("pName").value = s.salon_name; $("pAddress").value = s.address; $("pPhone").value = s.phone || ""; $("pAbout").value = s.about; $("pStep").value = String(s.slot_step);
+  const sc = $("supportCard");
+  if (sc) {
+    sc.style.display = state.me.support_access ? "" : "none";
+    if (state.me.support_access) $("supportNote").textContent =
+      "Разработчик сервиса может входить в ваш салон для настройки и помощи. Если вам это не нужно — напишите ему, доступ отключат.";
+  }
 }
 $("copyLink").onclick = async () => {
   try { await navigator.clipboard.writeText($("clientLink").textContent); toast("Ссылка скопирована"); }

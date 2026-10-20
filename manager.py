@@ -252,6 +252,21 @@ def ask_log_token():
     os.environ["LOG_BOT_TOKEN"] = token
 
 
+def ask_admin_token():
+    env_path = BASE / ".env"
+    text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+    if any(l.startswith("ADMIN_BOT_TOKEN=") for l in text.splitlines()):
+        return
+    print("\nНеобязательно: токен бота техподдержки (вход в любой салон как клиент/хозяин/мастер).")
+    owner = os.getenv("LOG_OWNER", "daniilkrivencev").strip().lstrip("@").lower()
+    print(f"Доступ будет только у @{owner}. Создайте бота у @BotFather.")
+    token = ask("Вставьте токен и Enter, или просто Enter, чтобы пропустить: ").strip('"')
+    if token and ":" not in token:
+        token = ""
+    env_path.write_text(text.rstrip("\n") + f"\nADMIN_BOT_TOKEN={token}\n", encoding="utf-8")
+    os.environ["ADMIN_BOT_TOKEN"] = token
+
+
 # ======================================================================
 #  Надзор за процессами салонов
 # ======================================================================
@@ -524,7 +539,7 @@ def status_text(runners: dict[str, Runner]) -> str:
 async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
     os.environ.pop("LUNKA_TENANT_DIR", None)
     os.environ.pop("LUNKA_TENANT", None)
-    from app import applog  # импорт после настройки окружения: менеджер — не салон
+    from app import adminbot, applog  # импорт после настройки окружения: менеджер — не салон
 
     runners = {slug: Runner(slug, cfg) for slug, cfg in ts.items()}
     if runners_out is not None:
@@ -542,7 +557,8 @@ async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
     print("=" * 60 + "\n")
     log(f"🟢 Менеджер запущен, салонов: {len(runners)} ({', '.join(runners)})")
     try:
-        await asyncio.gather(applog.run(listen=True), nightly_backups(log), *(r.run(log) for r in runners.values()))
+        await asyncio.gather(applog.run(listen=True), adminbot.run(), nightly_backups(log),
+                             *(r.run(log) for r in runners.values()))
     finally:
         for r in runners.values():
             r.stop()
@@ -586,6 +602,7 @@ def main():
         print("Пока нет ни одного салона — давайте добавим первый.")
         add_tenant_interactive()
     ask_log_token()
+    ask_admin_token()
     ts = tenants()
     errs = problems(ts)
     if errs:
