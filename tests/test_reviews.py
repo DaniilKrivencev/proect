@@ -207,6 +207,27 @@ async def main():
     assert len(kept) == n_before and photo_file.exists()
     assert all(db.review_author(x) == "Анна" for x in kept), [db.review_author(x) for x in kept]
     assert db.one("SELECT phone FROM clients WHERE id=?", (c["id"],))["phone"] == ""
+    # 10. Перенос отзывов с прошлых площадок (с фото работы), с честной пометкой
+    import base64 as _b64
+    body = {"master_id": m["id"], "author": "Ольга К.", "rating": 5, "text": "Лучший мастер в городе!",
+            "source": "Яндекс Карты", "day": "2026-05-14",
+            "photo": "data:image/jpeg;base64," + _b64.b64encode(JPEG).decode()}
+    res = tc.post("/api/reviews", headers=H, json=body)
+    assert res.status_code == 200, res.text
+    imp = db.get_review(res.json()["id"])
+    assert imp["source"] == "Яндекс Карты" and db.review_author(imp) == "Ольга К." and imp["booking_id"] is None
+    assert (db.REVIEWS_DIR / imp["photo"]).read_bytes() == JPEG
+    listed = [x for x in tc.get("/api/reviews", headers=H).json()["reviews"] if x["id"] == imp["id"]][0]
+    assert listed["source"] == "Яндекс Карты" and listed["date"] == "2026-05-14"
+    assert "перенесён: Яндекс Карты" in reviews.review_block(imp)
+    assert tc.post("/api/reviews", headers=H, json={**body, "day": "2999-01-01"}).status_code == 400, "дата из будущего"
+    assert tc.post("/api/reviews", headers=H, json={**body, "text": "", "photo": ""}).status_code == 400, "пустой отзыв"
+    # настоящий отзыв клиента удалить нельзя, перенесённый — можно
+    real = db.one("SELECT id FROM reviews WHERE source='' LIMIT 1")["id"]
+    assert tc.delete(f"/api/reviews/{real}", headers=H).status_code == 403
+    assert tc.delete(f"/api/reviews/{imp['id']}", headers=H).status_code == 200
+    assert not db.get_review(imp["id"]) and not (db.REVIEWS_DIR / imp["photo"]).exists()
+
     print("✅ Отзывы: бот, ссылка для клиентов без бота, фото, ответ мастера, рейтинг, кабинет — всё работает; при удалении клиента отзывы остаются")
 
 

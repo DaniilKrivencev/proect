@@ -331,6 +331,8 @@ def review_block(r: dict) -> str:
         out += f"\n📸 <a href=\"{photo_url(r['photo'])}\">Фото результата</a>"
     if r["reply"]:
         out += f"\n💬 <b>{html.escape(r['reply_by'] or 'Салон')}:</b> {html.escape(r['reply'])}"
+    if r.get("source"):
+        out += f"\n<i>📥 Отзыв перенесён: {html.escape(r['source'])}</i>"
     return out
 
 

@@ -709,9 +709,10 @@ async function loadReviews() {
       .concat(state.masters.map((m) => `<button class="chip ${state.reviewMaster === m.id ? "active" : ""}" data-m="${m.id}">${avatar(m)}${esc(m.name)}${ratings[m.id] ? ` · ★ ${fmtRating(ratings[m.id])}` : ""}</button>`)).join("");
     $("reviewChips").querySelectorAll(".chip").forEach((c) => (c.onclick = () => { state.reviewMaster = Number(c.dataset.m); loadReviews().catch(fail); }));
   } else $("reviewChips").hidden = true;
+  state.reviewSources = data.sources || [];
   const list = data.reviews;
   if (!list.length) {
-    $("reviewList").innerHTML = `<div class="empty"><b>Отзывов пока нет</b>После визита бот сам попросит клиента оценить мастера — отзывы появятся здесь</div>`;
+    $("reviewList").innerHTML = `<div class="empty"><b>Отзывов пока нет</b>После визита бот сам попросит клиента оценить мастера. А отзывы со старых площадок (Яндекс Карты, Avito, Instagram…) можно перенести кнопкой выше</div>`;
     return;
   }
   $("reviewList").innerHTML = list.map((r) => `
@@ -722,13 +723,20 @@ async function loadReviews() {
       ${r.text ? `<p class="rv-text">${esc(r.text)}</p>` : ""}
       ${r.photo ? `<a href="${esc(r.photo)}" target="_blank"><img class="rv-photo" src="${esc(r.photo)}" alt="Фото к отзыву" loading="lazy"></a>` : ""}
       ${r.reply ? `<div class="rv-reply"><b>${esc(r.reply_by || "Салон")}:</b> ${esc(r.reply)}</div>` : ""}
+      ${r.source ? `<span class="tag">📥 перенесён: ${esc(r.source)}</span>` : ""}
       ${r.hidden ? `<span class="tag accent">скрыт от клиентов</span>` : ""}
       <div class="row">
         <button class="ghost small" data-reply="${r.id}">${r.reply ? "Изменить ответ" : "Ответить"}</button>
-        ${isAdmin() ? `<button class="ghost small" data-hide="${r.id}">${r.hidden ? "Показать" : "Скрыть"}</button>` : ""}
+        ${r.source ? `<button class="ghost small" data-del="${r.id}">Удалить</button>`
+          : isAdmin() ? `<button class="ghost small" data-hide="${r.id}">${r.hidden ? "Показать" : "Скрыть"}</button>` : ""}
       </div>
     </div>`).join("");
   $("reviewList").querySelectorAll("[data-reply]").forEach((b) => (b.onclick = () => openReply(list.find((r) => r.id == b.dataset.reply))));
+  $("reviewList").querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => {
+    if (!(await confirmBox("Удалить перенесённый отзыв?"))) return;
+    try { await api(`api/reviews/${b.dataset.del}`, { method: "DELETE" }); toast("Удалено"); loadReviews(); }
+    catch (e) { fail(e); }
+  }));
   $("reviewList").querySelectorAll("[data-hide]").forEach((b) => (b.onclick = async () => {
     try { const r = await api(`api/reviews/${b.dataset.hide}/hide`, { method: "POST" }); toast(r.hidden ? "Отзыв скрыт от клиентов" : "Отзыв снова виден"); loadReviews(); }
     catch (e) { fail(e); }
@@ -768,3 +776,62 @@ document.querySelectorAll("#modeSeg button").forEach((b) => (b.onclick = async (
     await loadMe(); await refreshMasters(); buildTabs(); showTab("salon"); toast("Готово");
   } catch (e) { fail(e); }
 }));
+
+
+// ---------- перенос отзывов с прошлых площадок ----------
+// Фото уменьшаем до 1600 px и сжимаем в JPEG прямо в телефоне
+function photoToJpeg(file) {
+  return new Promise((ok, bad) => {
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(img.src);
+      ok(c.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => bad(new Error("Это фото не открывается — попробуйте другое"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+$("importReview").onclick = async () => {
+  if (isAdmin() && !state.masters.length) await refreshMasters();
+  const masters = isAdmin() && !isSolo() ? state.masters : [];
+  const sources = state.reviewSources?.length ? state.reviewSources : ["Яндекс Карты", "2ГИС", "Avito", "Instagram", "Другое"];
+  let rating = 5, photo = "";
+  openSheet(`
+    <h3>Перенести отзыв</h3>
+    <p class="muted small">Отзыв, который клиент оставлял вам раньше на другой площадке. Клиенты увидят пометку «перенесён» — это честно и вызывает больше доверия.</p>
+    ${masters.length > 1 ? `<label>Мастер<select id="irMaster">${masters.map((m) => `<option value="${m.id}" ${m.id === state.reviewMaster ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></label>` : ""}
+    <label>Откуда отзыв<select id="irSource">${sources.map((x) => `<option>${esc(x)}</option>`).join("")}</select></label>
+    <label>Имя клиента<input id="irAuthor" maxlength="60" placeholder="Ольга К."></label>
+    <div class="section-title">Оценка</div>
+    <div class="rv-pick" id="irStars">${[1, 2, 3, 4, 5].map((i) => `<button type="button" data-r="${i}">★</button>`).join("")}</div>
+    <label>Текст отзыва<textarea id="irText" rows="4" maxlength="1000" placeholder="Скопируйте текст отзыва как есть"></textarea></label>
+    <label>Дата отзыва<input id="irDay" type="date" value="${iso(new Date())}" max="${iso(new Date())}"></label>
+    <label class="rv-photo-pick"><input type="file" id="irFile" accept="image/*" hidden><img id="irPrev" alt="" hidden><span id="irPhotoText">📸 Фото работы (по желанию)</span></label>
+    <button class="primary wide" id="irSave">Добавить отзыв</button>`);
+  const paint = () => $("irStars").querySelectorAll("button").forEach((b) => b.classList.toggle("on", Number(b.dataset.r) <= rating));
+  $("irStars").querySelectorAll("button").forEach((b) => (b.onclick = () => { rating = Number(b.dataset.r); paint(); }));
+  paint();
+  $("irFile").onchange = async () => {
+    const f = $("irFile").files[0];
+    if (!f) return;
+    try { photo = await photoToJpeg(f); $("irPrev").src = photo; $("irPrev").hidden = false; $("irPhotoText").textContent = "Фото добавлено — нажмите, чтобы заменить"; }
+    catch (e) { fail(e); }
+  };
+  $("irSave").onclick = async () => {
+    const author = $("irAuthor").value.trim();
+    if (!author) return fail(new Error("Укажите имя клиента"));
+    if (!$("irText").value.trim() && !photo) return fail(new Error("Добавьте текст отзыва или фото работы"));
+    $("irSave").disabled = true;
+    try {
+      await api("api/reviews", { method: "POST", body: {
+        master_id: Number($("irMaster")?.value || state.reviewMaster || 0), author, rating,
+        text: $("irText").value.trim(), source: $("irSource").value, day: $("irDay").value, photo } });
+      closeSheet(); toast("Отзыв добавлен"); loadReviews();
+    } catch (e) { $("irSave").disabled = false; fail(e); }
+  };
+};

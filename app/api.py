@@ -543,7 +543,9 @@ def list_reviews(master_id: int = 0, u=Depends(current_user)):
         "reviews": [{"id": r["id"], "rating": r["rating"], "text": r["text"], "client": db.review_author(r),
                      "master_id": r["master_id"], "master": r["master_name"], "service": r["service_name"] or "",
                      "date": (r["start"] or r["created_at"])[:10], "photo": f"r/{r['photo']}" if r["photo"] else "",
-                     "reply": r["reply"], "reply_by": r["reply_by"], "hidden": bool(r["hidden"])} for r in rows],
+                     "reply": r["reply"], "reply_by": r["reply_by"], "hidden": bool(r["hidden"]),
+                     "source": r["source"] or ""} for r in rows],
+        "sources": db.REVIEW_SOURCES,
         "ratings": {str(k): {"avg": v[0], "n": v[1]} for k, v in rt.items()},
     }
 
@@ -590,6 +592,65 @@ def review_link(booking_id: int, u=Depends(current_user)):
     return {"link": link, "text": text}
 
 
+def decode_photo(data_url: str) -> bytes:
+    """Фото приходит из браузера как data:image/jpeg;base64,… (уже уменьшенное в телефоне)."""
+    if not data_url:
+        return b""
+    import base64
+    try:
+        raw = base64.b64decode(data_url.split(",", 1)[-1], validate=True)
+    except Exception:
+        raise HTTPException(400, "Фото не получилось прочитать")
+    if not raw.startswith(b"\xff\xd8"):
+        raise HTTPException(400, "Нужна фотография (JPEG)")
+    return raw
+
+
+def store_photo(raw: bytes) -> str:
+    db.REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    name = secrets.token_hex(12) + ".jpg"
+    (db.REVIEWS_DIR / name).write_bytes(raw)
+    return name
+
+
+class ImportReviewIn(BaseModel):
+    master_id: int = 0
+    author: str = Field(min_length=1, max_length=60)
+    rating: int = Field(ge=1, le=5)
+    text: str = Field(default="", max_length=1000)
+    source: str = Field(min_length=1, max_length=40)
+    day: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    photo: str = Field(default="", max_length=12_000_000)
+
+
+@app.post("/api/reviews")
+def import_review(p: ImportReviewIn, u=Depends(current_user)):
+    """Перенести отзыв с прошлой площадки мастера (с пометкой «перенесён с …»)."""
+    mid = u["master_id"] if u["role"] == "master" else (p.master_id or (db.own_master(u["tg_id"]) or {}).get("id"))
+    if not mid or not db.get_master(mid):
+        raise HTTPException(400, "Выберите мастера")
+    if p.day > db.now_local().date().isoformat():
+        raise HTTPException(400, "Дата отзыва не может быть в будущем")
+    if not p.text.strip() and not p.photo:
+        raise HTTPException(400, "Добавьте текст отзыва или фото работы")
+    raw = decode_photo(p.photo)
+    rid = db.add_imported_review(mid, p.author, p.rating, p.text, p.source.strip(), p.day,
+                                 store_photo(raw) if raw else "")
+    return {"id": rid}
+
+
+@app.delete("/api/reviews/{review_id}")
+def delete_review(review_id: int, u=Depends(current_user)):
+    """Удалить можно только перенесённый отзыв; настоящие отзывы клиентов — только скрыть."""
+    r = _review_for(u, review_id)
+    if not r["source"]:
+        raise HTTPException(403, "Отзывы клиентов не удаляются — их можно только скрыть")
+    if r["photo"]:
+        (db.REVIEWS_DIR / r["photo"]).unlink(missing_ok=True)
+    db.ex("DELETE FROM reviews WHERE id=?", (review_id,))
+    return {"ok": True}
+
+
 class PublicReviewIn(BaseModel):
     rating: int = Field(ge=1, le=5)
     text: str = Field(default="", max_length=1000)
@@ -617,22 +678,12 @@ async def public_review_post(token: str, p: PublicReviewIn):
     b = _public_booking(token)
     if b["start"] > db.now_str():
         raise HTTPException(409, "Оставить отзыв можно после визита")
-    raw = b""
-    if p.photo:  # сначала проверяем фото — чтобы при ошибке ничего не записать наполовину
-        try:
-            raw = base64.b64decode(p.photo.split(",", 1)[-1], validate=True)
-        except Exception:
-            raise HTTPException(400, "Фото не получилось прочитать")
-        if not raw.startswith(b"\xff\xd8"):
-            raise HTTPException(400, "Нужна фотография (JPEG)")
+    raw = decode_photo(p.photo)  # сначала проверяем фото — чтобы при ошибке ничего не записать наполовину
     first = not db.one("SELECT 1 FROM reviews WHERE booking_id=? AND (text!='' OR photo!='')", (b["id"],))
     rid = db.add_review(b, p.rating)
     db.ex("UPDATE reviews SET text=? WHERE id=?", (p.text.strip(), rid))
     if raw:
-        db.REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
-        name = secrets.token_hex(12) + ".jpg"
-        (db.REVIEWS_DIR / name).write_bytes(raw)
-        db.ex("UPDATE reviews SET photo=? WHERE id=?", (name, rid))
+        db.ex("UPDATE reviews SET photo=? WHERE id=?", (store_photo(raw), rid))
     db.ex("UPDATE bookings SET review_asked=1 WHERE id=?", (b["id"],))
     if first:
         from . import reviews

@@ -233,3 +233,10 @@ button.small { padding: 7px 13px; font-size: 13px; }
 .rv-hidden{opacity:.55}
 .rv .row{margin-top:4px}
 .rv-ask{margin-top:8px}
+.rv-pick{display:flex;gap:6px;margin:4px 0 12px}
+.rv-pick button{background:none;border:none;font-size:34px;line-height:1;color:var(--line, #E5DCD6);padding:0 2px;cursor:pointer}
+.rv-pick button.on{color:#C9963E}
+.rv-photo-pick{display:flex;align-items:center;gap:12px;border:1.5px dashed var(--line, #E5DCD6);border-radius:14px;padding:14px;margin:6px 0 14px;cursor:pointer;color:var(--muted)}
+.rv-photo-pick img{width:56px;height:56px;object-fit:cover;border-radius:10px}
+#importReview{margin-bottom:12px}
+.rv .tag{align-self:flex-start}

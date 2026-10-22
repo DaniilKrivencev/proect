@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS reviews (            -- отзывы клиентов
     reply_by   TEXT DEFAULT '',
     reply_at   TEXT DEFAULT '',
     hidden     INTEGER NOT NULL DEFAULT 0,      -- владелец скрыл отзыв
+    source     TEXT DEFAULT '',                 -- перенесён с другой площадки (Яндекс Карты…); пусто — оставлен здесь
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_reviews_master ON reviews(master_id, id);
@@ -173,6 +174,7 @@ MIGRATIONS = [
     "ALTER TABLE bookings ADD COLUMN review_asked INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE bookings ADD COLUMN review_token TEXT DEFAULT ''",
     "ALTER TABLE reviews ADD COLUMN author TEXT DEFAULT ''",
+    "ALTER TABLE reviews ADD COLUMN source TEXT DEFAULT ''",
 ]
 
 
@@ -452,7 +454,7 @@ def stars(avg: float, n: int) -> str:
 
 
 REVIEW_SQL = """SELECT r.*, c.name AS client_name, m.name AS master_name, b.service_name, b.start
-                FROM reviews r JOIN clients c ON c.id=r.client_id JOIN masters m ON m.id=r.master_id
+                FROM reviews r LEFT JOIN clients c ON c.id=r.client_id JOIN masters m ON m.id=r.master_id
                 LEFT JOIN bookings b ON b.id=r.booking_id"""
 
 
@@ -512,3 +514,16 @@ def is_solo() -> bool:
 def own_master(tg_id: int) -> dict | None:
     """Мастер, которым является сам владелец (у частного мастера — всегда он)."""
     return one("SELECT * FROM masters WHERE tg_id=? AND active=1", (tg_id,)) if tg_id else None
+
+
+# ---------- перенесённые отзывы (с прошлых площадок мастера) ----------
+REVIEW_SOURCES = ["Яндекс Карты", "2ГИС", "Avito", "Instagram", "ВКонтакте", "Telegram", "Profi.ru", "YCLIENTS",
+                  "Сайт", "Лично от клиента", "Другое"]
+
+
+def add_imported_review(master_id: int, author: str, rating: int, text: str, source: str, day: str,
+                        photo: str = "") -> int:
+    """Отзыв, который мастер перенёс с другой площадки. Клиенты видят пометку «перенесён с …»."""
+    return ex("""INSERT INTO reviews (booking_id, master_id, client_id, rating, author, text, photo, source, created_at)
+                 VALUES (NULL,?,0,?,?,?,?,?,?)""",
+              (master_id, rating, author.strip(), text.strip(), photo, source, f"{day} 12:00"))
