@@ -423,6 +423,9 @@ def restore_backup(path: str):
             target = (BASE / n).resolve()
             if BASE not in target.parents:
                 continue  # защита от «плохих» путей в архиве
+            is_data = n.startswith(("tenants/", "shared/")) or n == ".env"
+            if not is_data and target.exists():
+                continue  # код уже есть (свежий, из GitHub) — старым из копии не затираем
             target.parent.mkdir(parents=True, exist_ok=True)
             with z.open(n) as fsrc, open(target, "wb") as fdst:
                 shutil.copyfileobj(fsrc, fdst)
