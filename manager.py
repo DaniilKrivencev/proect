@@ -192,6 +192,26 @@ def import_salon(slug: str, file: str):
     print("   Ссылки-приглашения мастеров — в кабинете → «Мастера». График поправьте там же.")
 
 
+NICHE_KEYS = ("nails", "hair")
+ARCHIVE = BASE / "archive"   # удалённые салоны: данные не стираются, их можно вернуть
+
+
+def set_disabled(slug: str, disabled: bool):
+    cfg = tenants()[slug]
+    cfg.pop("DISABLED", None)
+    if disabled:
+        cfg["DISABLED"] = "1"
+    write_tenant(slug, cfg)
+
+
+def archive_tenant(slug: str) -> Path:
+    """«Удалить» салон: папка целиком уезжает в archive/ (вернуть — переложить обратно в tenants/)."""
+    ARCHIVE.mkdir(exist_ok=True)
+    dst = ARCHIVE / f"{slug}_{time.strftime('%Y-%m-%d_%H-%M')}"
+    shutil.move(str(TENANTS / slug), str(dst))
+    return dst
+
+
 TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
                     ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s", "t",
                      "u", "f", "h", "ts", "ch", "sh", "sch", "", "y", "", "e", "yu", "ya"]))
@@ -209,15 +229,21 @@ def slugify(name: str, taken) -> str:
     return slug
 
 
-def create_tenant(name: str, niche: str, token: str, max_token: str = "") -> str:
-    """Новый салон одной функцией (её вызывает и бот техподдержки). Возвращает имя папки."""
+def create_tenant(name: str, niche: str, token: str, max_token: str = "", niche_title: str = "") -> str:
+    """Новый салон одной функцией (её вызывает и бот техподдержки). Возвращает имя папки.
+    niche: nails / hair — или любой свой тип: тогда niche_title = «брови и ресницы» и т.п."""
     ts = tenants()
     if any(c.get("BOT_TOKEN") == token for c in ts.values()):
         raise ValueError("Этот бот уже подключён к другому салону — создайте новый в @BotFather (/newbot)")
     if max_token and any(c.get("MAX_BOT_TOKEN") == max_token for c in ts.values()):
         raise ValueError("Этот бот MAX уже подключён к другому салону")
     slug = slugify(name, ts)
-    write_tenant(slug, {"NAME": name, "NICHE": niche, "BOT_TOKEN": token, "PORT": next_port(ts), "MAX_BOT_TOKEN": max_token})
+    cfg = {"NAME": name, "NICHE": niche, "BOT_TOKEN": token, "PORT": next_port(ts), "MAX_BOT_TOKEN": max_token}
+    if niche not in NICHE_KEYS:
+        from app.niche import emoji_for
+        title = (niche_title or niche).strip()[:40]
+        cfg.update(NICHE="custom", NICHE_TITLE=title, NICHE_EMOJI=emoji_for(title))
+    write_tenant(slug, cfg)
     _set_salon_name(TENANTS / slug, name)
     return slug
 
@@ -604,7 +630,7 @@ class Runner:
 
     def env(self) -> dict:
         e = dict(os.environ)
-        for k in ("BOT_TOKEN", "MAX_BOT_TOKEN", "PORT", "NICHE", "WEBAPP_URL", "DB_FILE"):
+        for k in ("BOT_TOKEN", "MAX_BOT_TOKEN", "PORT", "NICHE", "NICHE_TITLE", "NICHE_EMOJI", "WEBAPP_URL", "DB_FILE", "DISABLED"):
             e.pop(k, None)  # ничего не наследуем от соседей — только из своего tenant.env
         e.update(LUNKA_TENANT_DIR=str(TENANTS / self.slug), LUNKA_TENANT=self.slug,
                  PYTHONUTF8="1", PYTHONUNBUFFERED="1")
@@ -650,6 +676,7 @@ class Runner:
 
 def status_text(runners: dict[str, Runner]) -> str:
     parts = ["📊 <b>Все салоны</b>"]
+    off = [f"⏸ {html.escape(c.get('NAME', s))} [{s}] — отключён" for s, c in tenants().items() if c.get("DISABLED") == "1"]
     for slug, r in runners.items():
         st = {}
         try:
@@ -666,6 +693,8 @@ def status_text(runners: dict[str, Runner]) -> str:
         if r.restarts:
             line += f"\n   перезапусков: {r.restarts}"
         parts.append(line)
+    if off:
+        parts.append("\n" + "\n".join(off))
     return "\n".join(parts)
 
 
@@ -674,7 +703,7 @@ async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
     os.environ.pop("LUNKA_TENANT", None)
     from app import adminbot, applog  # импорт после настройки окружения: менеджер — не салон
 
-    runners = {slug: Runner(slug, cfg) for slug, cfg in ts.items()}
+    runners = {slug: Runner(slug, cfg) for slug, cfg in ts.items() if cfg.get("DISABLED") != "1"}
     if runners_out is not None:
         runners_out.update(runners)
     applog.STATUS_PROVIDER = lambda: status_text(runners)
@@ -691,19 +720,46 @@ async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
     log(f"🟢 Менеджер запущен, салонов: {len(runners)} ({', '.join(runners)})")
     started: list[asyncio.Task] = []
 
-    async def start_new(slug: str) -> str:
+    async def start_new(slug: str, announce: bool = True) -> str:
         """Запустить только что добавленный салон, не трогая остальные. Возвращает адрес кабинета."""
         cfg = tenants()[slug]
         runners[slug] = Runner(slug, cfg)
         started.append(asyncio.create_task(runners[slug].run(log)))
         write_caddy(tenants())
-        log(f"➕ Добавлен салон «{html.escape(cfg.get('NAME', slug))}» [{slug}]")
+        if announce:
+            log(f"➕ Добавлен салон «{html.escape(cfg.get('NAME', slug))}» [{slug}]")
         from dotenv import dotenv_values
         domain = (dotenv_values(BASE / ".env").get("DOMAIN") or "").strip()
         return f"https://{slug}.{domain}" if domain else ""
 
+    def stop_salon(slug: str):
+        r = runners.pop(slug, None)
+        if r:
+            r.stop()
+
+    def disable(slug: str):
+        set_disabled(slug, True)
+        stop_salon(slug)
+        log(f"⏸ Салон [{slug}] отключён")
+
+    async def enable(slug: str):
+        set_disabled(slug, False)
+        if slug not in runners:
+            await start_new(slug, announce=False)
+        log(f"▶️ Салон [{slug}] снова включён")
+
+    def remove(slug: str) -> str:
+        stop_salon(slug)
+        dst = archive_tenant(slug)
+        write_caddy(tenants())
+        log(f"🗑 Салон [{slug}] удалён, данные в архиве: {dst.name}")
+        return dst.name
+
     adminbot.CREATE_SALON = create_tenant
     adminbot.START_SALON = start_new
+    adminbot.DISABLE_SALON = disable
+    adminbot.ENABLE_SALON = enable
+    adminbot.REMOVE_SALON = remove
     try:
         await asyncio.gather(applog.run(listen=True), adminbot.run(), nightly_backups(log),
                              *(r.run(log) for r in runners.values()))

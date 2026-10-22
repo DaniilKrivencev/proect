@@ -45,7 +45,32 @@ NICHES = {
     },
 }
 
+# Свой тип (брови, массаж, барбершоп…): NICHE=custom, NICHE_TITLE=«брови и ресницы», NICHE_EMOJI=«✨».
+# Тексты нейтральные, стартового прайса нет — владелец вносит услуги сам.
+EMOJI_BY_WORD = [("бров", "✨"), ("ресниц", "👁"), ("массаж", "💆"), ("барбер", "💈"), ("тату", "🖋"), ("пирсинг", "💎"),
+                 ("космет", "🧴"), ("депил", "🌿"), ("шугар", "🌿"), ("макияж", "💄"), ("визаж", "💄"), ("spa", "🧖"),
+                 ("спа", "🧖"), ("фитнес", "🏋️"), ("трен", "🏋️"), ("йог", "🧘"), ("репетит", "📚"), ("урок", "📚"),
+                 ("психолог", "🫶"), ("фото", "📸"), ("груминг", "🐾"), ("собак", "🐾"), ("стомат", "🦷"), ("ногт", "💅"),
+                 ("маник", "💅"), ("волос", "✂️"), ("стриж", "✂️"), ("парик", "✂️")]
+
+
+def emoji_for(title: str) -> str:
+    t = title.lower()
+    return next((e for w, e in EMOJI_BY_WORD if w in t), "✨")
+
+
 KEY = os.getenv("NICHE", "nails").strip().lower()
-if KEY not in NICHES:
+if KEY == "custom":
+    _title = os.getenv("NICHE_TITLE", "").strip() or "салон"
+    NICHES["custom"] = {
+        "title": _title.lower(),
+        "emoji": os.getenv("NICHE_EMOJI", "").strip() or emoji_for(_title),
+        "service_acc": "услугу",
+        "photo_hint": "Хотите что-то показать мастеру? Пришлите фото сюда — я передам.",
+        "come_back": "Будем рады видеть вас снова",
+        "default_name": _title[:1].upper() + _title[1:],
+        "services": [],
+    }
+elif KEY not in NICHES:
     KEY = "nails"
 N = NICHES[KEY]

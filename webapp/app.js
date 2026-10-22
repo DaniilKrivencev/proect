@@ -77,6 +77,9 @@ const PH_BY_NICHE = {
     service: "Женская стрижка", serviceEx: "«Женская стрижка», от 2000 ₽, 1 час",
     note: "Корни 6.0 + 7.1, оксид 6%. Не любит короткие виски", about: "Стрижки, окрашивание и уход. Работаем на профессиональной косметике" },
 };
+PH_BY_NICHE.custom = { master: "Мастер", spec: "Опыт 5 лет, сертифицированный специалист", newSpec: "Мастер",
+  service: "Название услуги", serviceEx: "«Услуга», 2000 ₽, 1 час",
+  note: "Что важно помнить о клиенте: пожелания, противопоказания", about: "Пара слов о вас: опыт, уютная атмосфера, удобное расположение" };
 const PH = () => PH_BY_NICHE[state.me?.niche] || PH_BY_NICHE.nails;
 const state = { me: null, masters: [], services: [], day: iso(new Date()), master: 0, clients: [], clientFilter: "all" };
 const isAdmin = () => state.me?.role === "admin";

@@ -8,6 +8,7 @@
 Запускается в менеджере (manager.py). Своего токена нет — берётся ADMIN_BOT_TOKEN.
 """
 import asyncio
+import html
 import json
 import logging
 import sqlite3
@@ -30,8 +31,12 @@ CREATE_SALON = None
 START_SALON = None
 
 
+DISABLE_SALON = ENABLE_SALON = REMOVE_SALON = None
+
+
 class AddSalon(StatesGroup):
     name = State()
+    niche = State()
     token = State()
     max_token = State()
 
@@ -41,12 +46,30 @@ ROLES = {"client": "👤 Клиент", "owner": "👑 Хозяин", "master": 
 
 
 def _allowed(message_or_cb) -> bool:
-    return (message_or_cb.from_user.username or "").lower() == LOG_OWNER
+    """Только владелец платформы. Если его id уже сохранён — проверяем по id (username можно сменить или занять)."""
+    u = message_or_cb.from_user
+    did = _admin_data().get("dev_id")
+    if did:
+        return u.id == int(did)
+    return (u.username or "").lower() == LOG_OWNER
+
+
+def _admin_data() -> dict:
+    try:
+        return json.loads((SHARED_DIR / "admin.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_admin_data(**kv):
+    d = _admin_data()
+    d.update(kv)
+    SHARED_DIR.mkdir(exist_ok=True)
+    (SHARED_DIR / "admin.json").write_text(json.dumps(d), encoding="utf-8")
 
 
 def set_dev_id(tg_id: int):
-    SHARED_DIR.mkdir(exist_ok=True)
-    (SHARED_DIR / "admin.json").write_text(json.dumps({"dev_id": tg_id}), encoding="utf-8")
+    _save_admin_data(dev_id=tg_id)  # остальное (PIN) сохраняется
 
 
 def _tenant_cfg(slug: str) -> dict:
@@ -74,7 +97,7 @@ def _salons() -> list[dict]:
             bot = json.loads((d / "status.json").read_text(encoding="utf-8")).get("bot") or ""
         except Exception:
             pass
-        out.append({"slug": d.name, "name": cfg.get("NAME", d.name),
+        out.append({"slug": d.name, "name": cfg.get("NAME", d.name), "disabled": cfg.get("DISABLED") == "1",
                     "db": d / (cfg.get("DB_FILE") or "lunka.db"), "bot": bot})
     return out
 
@@ -117,7 +140,7 @@ async def _show_salons(target):
     if not salons:
         await target.answer("Пока нет ни одного салона на сервере.", reply_markup=_kb([[_btn("➕ Добавить салон", "dv:add")]]))
         return
-    rows = [[_btn(s["name"], f"dv:s:{s['slug']}")] for s in salons]
+    rows = [[_btn(("⏸ " if s["disabled"] else "") + s["name"], f"dv:s:{s['slug']}")] for s in salons]
     rows.append([_btn("➕ Добавить салон", "dv:add")])
     text = "🛠 <b>Техподдержка</b>\n\nВыберите салон, в который хотите войти, или добавьте новый:"
     if isinstance(target, Message):
@@ -167,9 +190,16 @@ async def pick_salon(cb: CallbackQuery):
         await cb.answer("Салон не найден", show_alert=True)
         return
     await cb.answer()
+    if s["disabled"]:
+        rows = [[_btn("▶️ Включить салон", f"dv:on:{slug}")], [_btn("🗑 Удалить салон", f"dv:del:{slug}")],
+                [_btn("◀️ Назад", "dv:home")]]
+        await cb.message.edit_text(f"⏸ Салон «{s['name']}» отключён: бот не отвечает клиентам, данные сохранены.",
+                                   reply_markup=_kb(rows))
+        return
     rows = [[_btn(ROLES["client"], f"dv:r:{slug}:client")],
             [_btn(ROLES["owner"], f"dv:r:{slug}:owner")],
             [_btn(ROLES["master"], f"dv:m:{slug}")],
+            [_btn("⏸ Отключить", f"dv:off:{slug}"), _btn("🗑 Удалить", f"dv:del:{slug}")],
             [_btn("◀️ Назад", "dv:home")]]
     await cb.message.edit_text(f"Салон «{s['name']}». В какой роли войти?", reply_markup=_kb(rows))
 
@@ -284,7 +314,42 @@ async def add_name(message: Message, state: FSMContext):
         return
     await state.update_data(name=name)
     await message.answer(f"«{name}» 👍\n\n<b>Шаг 2 из 4.</b> Чем занимается салон? От этого зависят тексты в боте и стартовый прайс.",
-                         reply_markup=_kb([[_btn(t, f"dv:niche:{k}")] for t, k in NICHE_BTNS] + [[_btn("Отмена", "dv:add_cancel")]]))
+                         reply_markup=_kb([[_btn(t, f"dv:niche:{k}")] for t, k in NICHE_BTNS]
+                                          + [[_btn("✍️ Свой вариант — напишу сам", "dv:niche_own")], [_btn("Отмена", "dv:add_cancel")]]))
+
+
+@router.callback_query(F.data == "dv:niche_own")
+async def add_niche_own(cb: CallbackQuery, state: FSMContext):
+    if not _allowed(cb) or not (await state.get_data()).get("name"):
+        await cb.answer()
+        return
+    await cb.answer()
+    await state.set_state(AddSalon.niche)
+    await cb.message.edit_text("Напишите, чем занимается салон — одним-двумя словами.\n"
+                               "<i>Например: брови и ресницы, массаж, барбершоп, тату, косметология</i>",
+                               reply_markup=_kb([[_btn("Отмена", "dv:add_cancel")]]))
+
+
+@router.message(AddSalon.niche, F.text)
+async def add_niche_text(message: Message, state: FSMContext):
+    if not _allowed(message):
+        return
+    title = message.text.strip()[:40]
+    if len(title) < 3 or title.startswith("/"):
+        await message.answer("Напишите тип салона — хотя бы 3 буквы, например «массаж».")
+        return
+    from .niche import emoji_for
+    await state.update_data(niche="custom", niche_title=title)
+    await state.set_state(AddSalon.token)
+    await message.answer(f"Тип: {emoji_for(title)} {title}. Услуги и цены владелец внесёт в кабинете сам.\n\n" + TOKEN_STEP,
+                         reply_markup=_kb([[_btn("Отмена", "dv:add_cancel")]]))
+
+
+TOKEN_STEP = ("<b>Шаг 3 из 4. Бот в Telegram</b>\n\n"
+              "1. Откройте @BotFather → /newbot\n"
+              "2. Имя — название салона, адрес — любой свободный, на конце _bot\n"
+              "3. Скопируйте токен (выглядит так: <code>1234567890:AAH…</code>) и пришлите сюда.\n\n"
+              "🔒 Сообщение с токеном я сразу удалю из чата.")
 
 
 @router.callback_query(F.data.startswith("dv:niche:"))
@@ -377,7 +442,7 @@ async def finish_add(message: Message, state: FSMContext, max_token: str):
     d = await state.get_data()
     await state.clear()
     try:
-        slug = CREATE_SALON(d["name"], d["niche"], d["token"], max_token)
+        slug = CREATE_SALON(d["name"], d["niche"], d["token"], max_token, d.get("niche_title", ""))
         cabinet = await START_SALON(slug)
     except Exception as e:
         await message.answer(f"❌ Не получилось добавить салон: {e}")
@@ -393,3 +458,151 @@ async def finish_add(message: Message, state: FSMContext, max_token: str):
         "3. Если есть прайс и мастера в файле — <code>manager.py import</code>.\n\n"
         "Через минуту салон появится в /status 🟢",
         disable_web_page_preview=True)
+
+
+
+# ======================================================================
+#  ⏸ Отключить / ▶️ Включить / 🗑 Удалить — только с PIN-кодом
+# ======================================================================
+import hashlib  # noqa: E402
+import secrets as _secrets  # noqa: E402
+import time as _time  # noqa: E402
+
+PIN_TRIES, PIN_LOCK = 3, 15 * 60
+_fails = {"n": 0, "until": 0.0}
+
+
+class Danger(StatesGroup):
+    new_pin = State()
+    pin = State()
+    confirm_name = State()
+
+
+def _pin_hash(pin: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac("sha256", pin.encode(), salt.encode(), 200_000).hex()
+
+
+def pin_is_set() -> bool:
+    return bool(_admin_data().get("pin_hash"))
+
+
+def check_pin(pin: str) -> bool:
+    d = _admin_data()
+    return bool(d.get("pin_hash")) and _secrets.compare_digest(_pin_hash(pin, d.get("pin_salt", "")), d["pin_hash"])
+
+
+ACTIONS = {"off": "⏸ отключить", "on": "▶️ включить", "del": "🗑 удалить"}
+
+
+@router.callback_query(F.data.regexp(r"^dv:(off|on|del):"))
+async def danger_start(cb: CallbackQuery, state: FSMContext):
+    if not _allowed(cb):
+        await cb.answer()
+        return
+    _, action, slug = cb.data.split(":", 2)
+    s = _salon(slug)
+    if not s:
+        await cb.answer("Салон не найден", show_alert=True)
+        return
+    await cb.answer()
+    if _time.time() < _fails["until"]:
+        mins = int((_fails["until"] - _time.time()) // 60) + 1
+        await cb.message.answer(f"🔒 Слишком много неверных PIN-кодов. Попробуйте через {mins} мин.")
+        return
+    await state.clear()
+    await state.update_data(action=action, slug=slug)
+    if not pin_is_set():
+        await state.set_state(Danger.new_pin)
+        await cb.message.answer("🔐 <b>Сначала придумайте PIN-код</b> — 4–8 цифр. Он будет нужен, чтобы отключать "
+                                "и удалять салоны. Сообщение с ним я сразу удалю.\n\nЗапомните его — восстановить нельзя "
+                                "(только удалив строки pin_* из shared/admin.json на сервере).",
+                                reply_markup=_kb([[_btn("Отмена", "dv:danger_cancel")]]))
+        return
+    await state.set_state(Danger.pin)
+    await cb.message.answer(f"Вы хотите {ACTIONS[action]} салон «{html.escape(s['name'])}».\n\n🔐 Введите PIN-код:",
+                            reply_markup=_kb([[_btn("Отмена", "dv:danger_cancel")]]))
+
+
+@router.callback_query(F.data == "dv:danger_cancel")
+async def danger_cancel(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.answer("Отменено")
+    await cb.message.edit_text("Отменено, ничего не изменилось.")
+
+
+async def _read_secret(message: Message) -> str:
+    text = (message.text or "").strip()
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    return text
+
+
+@router.message(Danger.new_pin, F.text)
+async def danger_new_pin(message: Message, state: FSMContext):
+    if not _allowed(message):
+        return
+    pin = await _read_secret(message)
+    if not (pin.isdigit() and 4 <= len(pin) <= 8):
+        await message.answer("PIN — от 4 до 8 цифр. Придумайте ещё раз:")
+        return
+    salt = _secrets.token_hex(16)
+    _save_admin_data(pin_salt=salt, pin_hash=_pin_hash(pin, salt))
+    await state.set_state(Danger.pin)
+    await message.answer("✅ PIN-код сохранён. Теперь введите его ещё раз, чтобы подтвердить действие:")
+
+
+@router.message(Danger.pin, F.text)
+async def danger_pin(message: Message, state: FSMContext):
+    if not _allowed(message):
+        return
+    pin = await _read_secret(message)
+    if not check_pin(pin):
+        _fails["n"] += 1
+        if _fails["n"] >= PIN_TRIES:
+            _fails.update(n=0, until=_time.time() + PIN_LOCK)
+            await state.clear()
+            log.warning("Бот техподдержки: 3 неверных PIN — блокировка на 15 минут")
+            await message.answer("🔒 Неверный PIN 3 раза подряд. Опасные действия заблокированы на 15 минут.")
+            return
+        await message.answer(f"❌ Неверный PIN. Осталось попыток: {PIN_TRIES - _fails['n']}")
+        return
+    _fails["n"] = 0
+    d = await state.get_data()
+    s = _salon(d.get("slug", ""))
+    if not s:
+        await state.clear()
+        await message.answer("Салон не найден.")
+        return
+    if d["action"] == "del":
+        await state.set_state(Danger.confirm_name)
+        await message.answer(f"⚠️ Удаление: бот «{html.escape(s['name'])}» перестанет работать, салон пропадёт из списка. "
+                             "Данные (клиенты, записи, отзывы) переедут в архив на сервере — их можно будет вернуть.\n\n"
+                             f"Чтобы подтвердить, напишите название салона точно:\n<code>{html.escape(s['name'])}</code>",
+                             reply_markup=_kb([[_btn("Отмена", "dv:danger_cancel")]]))
+        return
+    await state.clear()
+    if d["action"] == "off":
+        DISABLE_SALON(s["slug"])
+        await message.answer(f"⏸ Салон «{html.escape(s['name'])}» отключён. Бот не отвечает клиентам, все данные сохранены. "
+                             "Включить снова — в списке салонов.", reply_markup=_kb([[_btn("◀️ К салонам", "dv:home")]]))
+    else:
+        await ENABLE_SALON(s["slug"])
+        await message.answer(f"▶️ Салон «{html.escape(s['name'])}» снова работает.", reply_markup=_kb([[_btn("◀️ К салонам", "dv:home")]]))
+
+
+@router.message(Danger.confirm_name, F.text)
+async def danger_confirm(message: Message, state: FSMContext):
+    if not _allowed(message):
+        return
+    d = await state.get_data()
+    s = _salon(d.get("slug", ""))
+    await state.clear()
+    if not s or message.text.strip() != s["name"]:
+        await message.answer("Название не совпало — удаление отменено, ничего не изменилось.")
+        return
+    archived = REMOVE_SALON(s["slug"])
+    await message.answer(f"🗑 Салон «{html.escape(s['name'])}» удалён.\nДанные в архиве на сервере: <code>archive/{archived}</code>\n"
+                         "Вернуть: переложить эту папку в tenants/ под старым именем и перезапустить сервис.",
+                         reply_markup=_kb([[_btn("◀️ К салонам", "dv:home")]]))
