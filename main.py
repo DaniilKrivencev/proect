@@ -105,6 +105,8 @@ async def main():
         log.warning("Не удалось обновить меню команд: %s", e)
 
     dp = Dispatcher(storage=MemoryStorage())
+    from app import reviews
+    dp.include_router(reviews.router)  # раньше основного: шаги отзыва не должны уходить администратору
     dp.include_router(bot_module.router)
 
     server = uvicorn.Server(uvicorn.Config(api.app, host="127.0.0.1", port=config.PORT, log_level="warning"))

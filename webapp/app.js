@@ -127,13 +127,14 @@ const ICONS = {
   salon: '<path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1z"/>',
   myschedule: '<circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/>',
   chats: '<path d="M4.5 6.5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H10l-4 3.5v-3.5h0a1.5 1.5 0 0 1-1.5-1.5z"/>',
+  reviews: '<path d="M12 4.5l2.3 4.7 5.2.8-3.8 3.6.9 5.2-4.6-2.4-4.6 2.4.9-5.2-3.8-3.6 5.2-.8z"/>',
 };
-const LABELS = { bookings: "Записи", chats: "Чаты", masters: "Мастера", clients: "Клиенты", salon: "Салон", myschedule: "График" };
+const LABELS = { bookings: "Записи", chats: "Чаты", masters: "Мастера", clients: "Клиенты", salon: "Салон", myschedule: "График", reviews: "Отзывы" };
 const LOADERS = { bookings: () => loadDay(), chats: () => loadChats(), masters: () => loadMasters(),
-  clients: () => loadClients(), salon: () => loadSalon(), myschedule: () => loadMySchedule() };
+  clients: () => loadClients(), salon: () => loadSalon(), myschedule: () => loadMySchedule(), reviews: () => loadReviews() };
 
 function buildTabs() {
-  const tabs = isAdmin() ? ["bookings", "chats", "masters", "clients", "salon"] : ["bookings", "clients", "myschedule"];
+  const tabs = isAdmin() ? ["bookings", "chats", "masters", "clients", "reviews", "salon"] : ["bookings", "clients", "reviews", "myschedule"];
   $("tabs").innerHTML = tabs.map((t, i) => `<button data-tab="${t}" class="${i ? "" : "active"}"><svg viewBox="0 0 24 24">${ICONS[t]}</svg>${LABELS[t]}${t === "chats" ? '<span class="count" id="chatCount" hidden></span>' : ""}</button>`).join("");
   $("tabs").querySelectorAll("button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
   updateChatBadge();
@@ -668,3 +669,66 @@ renderThemeControls();
     document.body.innerHTML = `<div class="empty" style="margin:40px 16px"><b>Нет доступа</b>${esc(e.message)}</div>`;
   }
 })();
+
+
+// ---------- отзывы ----------
+const starLine = (r) => "★".repeat(r) + "☆".repeat(5 - r);
+const fmtRating = (v) => String(v.avg).replace(".", ",");
+async function loadReviews() {
+  if (isAdmin() && !state.masters.length) await refreshMasters();
+  const data = await api(`api/reviews?master_id=${isAdmin() ? (state.reviewMaster || 0) : 0}`);
+  const ratings = data.ratings;
+  const mine = !isAdmin() ? ratings[state.me.master_id] : null;
+  const all = Object.values(ratings);
+  const total = all.reduce((s, v) => s + v.n, 0);
+  const avg = total ? (all.reduce((s, v) => s + v.avg * v.n, 0) / total).toFixed(1) : null;
+  const head = isAdmin() ? (total ? { avg, n: total } : null) : mine;
+  $("reviewSummary").innerHTML = head
+    ? `<div class="card rv-head"><div class="rv-big">${String(head.avg).replace(".", ",")}</div><div><div class="rv-stars">${starLine(Math.round(head.avg))}</div>
+       <div class="muted small">${head.n} ${plural(head.n, "отзыв", "отзыва", "отзывов")}${isAdmin() ? " по салону" : ""}</div></div></div>`
+    : "";
+  if (isAdmin()) {
+    $("reviewChips").hidden = false;
+    $("reviewChips").innerHTML = [`<button class="chip ${state.reviewMaster ? "" : "active"}" data-m="0">Все мастера</button>`]
+      .concat(state.masters.map((m) => `<button class="chip ${state.reviewMaster === m.id ? "active" : ""}" data-m="${m.id}">${avatar(m)}${esc(m.name)}${ratings[m.id] ? ` · ★ ${fmtRating(ratings[m.id])}` : ""}</button>`)).join("");
+    $("reviewChips").querySelectorAll(".chip").forEach((c) => (c.onclick = () => { state.reviewMaster = Number(c.dataset.m); loadReviews().catch(fail); }));
+  } else $("reviewChips").hidden = true;
+  const list = data.reviews;
+  if (!list.length) {
+    $("reviewList").innerHTML = `<div class="empty"><b>Отзывов пока нет</b>После визита бот сам попросит клиента оценить мастера — отзывы появятся здесь</div>`;
+    return;
+  }
+  $("reviewList").innerHTML = list.map((r) => `
+    <div class="card rv ${r.hidden ? "rv-hidden" : ""}">
+      <div class="rv-top"><span class="rv-stars">${starLine(r.rating)}</span><span class="muted small">${r.date.slice(8, 10)}.${r.date.slice(5, 7)}</span></div>
+      <div class="title">${esc(r.client)}${r.service ? ` <span class="muted small">· ${esc(r.service)}</span>` : ""}</div>
+      ${isAdmin() && !state.reviewMaster ? `<div class="muted small">Мастер ${esc(r.master)}</div>` : ""}
+      ${r.text ? `<p class="rv-text">${esc(r.text)}</p>` : ""}
+      ${r.photo ? `<a href="${esc(r.photo)}" target="_blank"><img class="rv-photo" src="${esc(r.photo)}" alt="Фото к отзыву" loading="lazy"></a>` : ""}
+      ${r.reply ? `<div class="rv-reply"><b>${esc(r.reply_by || "Салон")}:</b> ${esc(r.reply)}</div>` : ""}
+      ${r.hidden ? `<span class="tag accent">скрыт от клиентов</span>` : ""}
+      <div class="row">
+        <button class="ghost small" data-reply="${r.id}">${r.reply ? "Изменить ответ" : "Ответить"}</button>
+        ${isAdmin() ? `<button class="ghost small" data-hide="${r.id}">${r.hidden ? "Показать" : "Скрыть"}</button>` : ""}
+      </div>
+    </div>`).join("");
+  $("reviewList").querySelectorAll("[data-reply]").forEach((b) => (b.onclick = () => openReply(list.find((r) => r.id == b.dataset.reply))));
+  $("reviewList").querySelectorAll("[data-hide]").forEach((b) => (b.onclick = async () => {
+    try { const r = await api(`api/reviews/${b.dataset.hide}/hide`, { method: "POST" }); toast(r.hidden ? "Отзыв скрыт от клиентов" : "Отзыв снова виден"); loadReviews(); }
+    catch (e) { fail(e); }
+  }));
+}
+function openReply(r) {
+  openSheet(`
+    <h3>Ответ на отзыв</h3>
+    <p class="muted small">${starLine(r.rating)} · ${esc(r.client)}${r.text ? `<br>«${esc(r.text)}»` : ""}</p>
+    <label>Ваш ответ<textarea id="rvText" rows="4" maxlength="1000" placeholder="Спасибо, что выбрали нас! Ждём снова 🌸">${esc(r.reply || "")}</textarea></label>
+    <p class="muted small">Ответ увидят все клиенты под отзывом, а автор получит его в мессенджер.</p>
+    <button class="primary wide" id="rvSend">Опубликовать ответ</button>`);
+  $("rvSend").onclick = async () => {
+    const text = $("rvText").value.trim();
+    if (!text) return fail(new Error("Напишите ответ"));
+    try { await api(`api/reviews/${r.id}/reply`, { method: "POST", body: { text } }); closeSheet(); toast("Ответ опубликован"); loadReviews(); }
+    catch (e) { fail(e); }
+  };
+}

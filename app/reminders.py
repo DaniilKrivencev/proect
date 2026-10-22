@@ -85,6 +85,8 @@ async def loop():
         try:
             await send_reminders()
             await send_digests()
+            from . import reviews
+            await reviews.send_requests()
         except Exception:
             log.exception("Ошибка в фоновых задачах")
         await asyncio.sleep(60)

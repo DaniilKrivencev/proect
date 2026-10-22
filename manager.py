@@ -345,7 +345,7 @@ def ask_admin_token():
 BACKUPS = BASE / "backups"
 KEEP_BACKUPS = 14
 CODE_ITEMS = ["app", "webapp", "tests", "main.py", "manager.py", "requirements.txt", "ИНСТРУКЦИЯ.txt",
-              "ПЕРЕЕЗД_НА_ДРУГОЙ_СЕРВЕР.txt", "НОВЫЙ_ЗАКАЗЧИК.txt", ".env.example", ".gitignore"]
+              "ПЕРЕЕЗД_НА_ДРУГОЙ_СЕРВЕР.txt", "НОВЫЙ_ЗАКАЗЧИК.txt", ".env.example", ".gitignore", "salons"]
 
 
 def make_backup(quiet: bool = False, out: Path | None = None) -> Path:
@@ -386,6 +386,8 @@ def make_backup(quiet: bool = False, out: Path | None = None) -> Path:
                     dst.close()
                     src.close()
                     z.write(snap, f"tenants/{slug}/lunka.db")
+                for f in (folder / "reviews").glob("*.jpg"):  # фото к отзывам
+                    z.write(f, f"tenants/{slug}/reviews/{f.name}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     old = sorted(BACKUPS.glob("backup_*.zip"))
@@ -474,6 +476,7 @@ def reset_service(choice: str = "", salons: str = "", confirm: str = "", drop_ba
             if choice == "1":
                 for name in DATA_FILES:
                     (folder / name).unlink(missing_ok=True)
+                shutil.rmtree(folder / "reviews", ignore_errors=True)
             else:
                 shutil.rmtree(folder)
         except OSError:

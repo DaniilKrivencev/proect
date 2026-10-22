@@ -77,13 +77,14 @@ B_BOOK = f"{N['emoji']} Записаться"
 B_MY = "📋 Мои записи"
 B_CONTACTS = "📍 Адрес и телефон"
 B_HELP = "❓ Как записаться"
+B_REVIEWS = "⭐ Отзывы"
 B_SEND_PHONE = "📱 Отправить мой номер"
 B_STOP = "↩️ Не записываться"
-MENU_TEXTS = {B_BOOK, B_MY, B_CONTACTS, B_HELP, B_STOP}
+MENU_TEXTS = {B_BOOK, B_MY, B_CONTACTS, B_HELP, B_STOP, B_REVIEWS}
 
 MENU = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text=B_BOOK)], [KeyboardButton(text=B_MY), KeyboardButton(text=B_CONTACTS)],
-              [KeyboardButton(text=B_HELP)]],
+              [KeyboardButton(text=B_REVIEWS), KeyboardButton(text=B_HELP)]],
     resize_keyboard=True, is_persistent=True, input_field_placeholder="Нажмите кнопку внизу 👇")
 
 PHONE_KB = ReplyKeyboardMarkup(
@@ -381,7 +382,8 @@ async def client_welcome(message: Message):
         + ("Кнопки меню — под этим сообщением 👇\n" if message.chat.id < 0 else "Внизу экрана у вас всегда есть меню с кнопками 👇\n") +
         f"• <b>{B_BOOK}</b> — новая запись\n"
         f"• <b>{B_MY}</b> — посмотреть, перенести или отменить\n"
-        f"• <b>{B_CONTACTS}</b> — как нас найти",
+        f"• <b>{B_CONTACTS}</b> — как нас найти\n"
+        f"• <b>{B_REVIEWS}</b> — что пишут о мастерах",
         reply_markup=MENU)
     await message.answer("Начнём? 👇", reply_markup=kb([[btn(f"{N['emoji']} Записаться на {N['service_acc']}", "book")]]))
 
@@ -525,7 +527,9 @@ async def choose_service(cb: CallbackQuery, callback_data: Svc):
         return
     await cb.answer()
     rows = [[btn("✨ Любой свободный мастер", Mst(s=s["id"], m=0))]]
-    rows += [[btn(m["name"] + (f" · {m['spec']}" if m["spec"] else ""), Mst(s=s["id"], m=m["id"]))] for m in masters]
+    rt = db.master_ratings()
+    rows += [[btn(m["name"] + (f" · {db.stars(*rt[m['id']])}" if m["id"] in rt else (f" · {m['spec']}" if m["spec"] else "")),
+                  Mst(s=s["id"], m=m["id"]))] for m in masters]
     rows += nav("book")
     await safe_edit(cb.message, chosen(s) + step_head(2, 4, "Выберите мастера.\n"
                     "Если всё равно к кому — нажмите «Любой свободный мастер», так больше свободного времени"),

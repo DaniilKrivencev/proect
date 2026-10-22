@@ -102,6 +102,21 @@ CREATE TABLE IF NOT EXISTS relay (              -- какое уведомлен
     client_id  INTEGER NOT NULL,
     PRIMARY KEY (chat_id, message_id)
 );
+CREATE TABLE IF NOT EXISTS reviews (            -- отзывы клиентов о мастерах (после визита)
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_id INTEGER UNIQUE,                  -- один отзыв на визит
+    master_id  INTEGER NOT NULL,
+    client_id  INTEGER NOT NULL,
+    rating     INTEGER NOT NULL,                -- 1..5
+    text       TEXT DEFAULT '',
+    photo      TEXT DEFAULT '',                 -- имя файла в tenants/<салон>/reviews/
+    reply      TEXT DEFAULT '',                 -- ответ мастера / салона
+    reply_by   TEXT DEFAULT '',
+    reply_at   TEXT DEFAULT '',
+    hidden     INTEGER NOT NULL DEFAULT 0,      -- владелец скрыл отзыв
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reviews_master ON reviews(master_id, id);
 """
 
 DEFAULT_SETTINGS = {
@@ -138,6 +153,8 @@ def init(path=None):
     for sql in MIGRATIONS:  # новые колонки для баз из прошлых версий
         try:
             _conn.execute(sql)
+            if "review_asked" in sql:  # колонка появилась только что: о старых визитах отзыв не просим
+                _conn.execute("UPDATE bookings SET review_asked=1 WHERE start<?", (now_str(),))
         except sqlite3.OperationalError:
             pass  # колонка уже есть
     for k, v in DEFAULT_SETTINGS.items():
@@ -151,6 +168,7 @@ def init(path=None):
 
 MIGRATIONS = [
     "ALTER TABLE clients ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE bookings ADD COLUMN review_asked INTEGER NOT NULL DEFAULT 0",
 ]
 
 
@@ -410,5 +428,41 @@ def delete_client(client_id: int):
     """Удалить клиента: стираем личные данные и переписку (152-ФЗ — право на удаление).
     Прошлые визиты остаются как «Удалённый клиент», чтобы не ломалась выручка и статистика."""
     delete_chat(client_id)
+    delete_client_reviews(client_id)
     ex("""UPDATE clients SET name='Удалённый клиент', phone='', note='', username='', tg_id=NULL, deleted=1
           WHERE id=?""", (client_id,))
+
+
+# ---------- отзывы ----------
+REVIEWS_DIR = DB_PATH.parent / "reviews"     # фото к отзывам — рядом с базой салона
+
+
+def master_ratings() -> dict[int, tuple[float, int]]:
+    """{мастер: (средняя оценка, сколько отзывов)} — только видимые отзывы."""
+    return {r["master_id"]: (round(r["avg"], 1), r["n"]) for r in
+            q("SELECT master_id, AVG(rating) AS avg, COUNT(*) AS n FROM reviews WHERE hidden=0 GROUP BY master_id")}
+
+
+def stars(avg: float, n: int) -> str:
+    return f"★ {avg:.1f} ({n})".replace(".", ",") if n else ""
+
+
+REVIEW_SQL = """SELECT r.*, c.name AS client_name, m.name AS master_name, b.service_name, b.start
+                FROM reviews r JOIN clients c ON c.id=r.client_id JOIN masters m ON m.id=r.master_id
+                LEFT JOIN bookings b ON b.id=r.booking_id"""
+
+
+def get_review(review_id: int) -> dict | None:
+    return one(REVIEW_SQL + " WHERE r.id=?", (review_id,))
+
+
+def first_name(name: str) -> str:
+    """В отзывах показываем только имя — без фамилии и контактов."""
+    return (name or "Клиент").split()[0]
+
+
+def delete_client_reviews(client_id: int):
+    for r in q("SELECT photo FROM reviews WHERE client_id=?", (client_id,)):
+        if r["photo"]:
+            (REVIEWS_DIR / r["photo"]).unlink(missing_ok=True)
+    ex("DELETE FROM reviews WHERE client_id=?", (client_id,))

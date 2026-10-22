@@ -220,3 +220,15 @@ button.small { padding: 7px 13px; font-size: 13px; }
 .toast.show { transform: translate(-50%, 0); }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* ---------- отзывы ---------- */
+.rv-head{display:flex;gap:16px;align-items:center}
+.rv-big{font-family:"Cormorant Garamond",serif;font-size:46px;font-weight:600;line-height:1}
+.rv-stars{color:#C9963E;letter-spacing:2px;font-size:17px}
+.rv{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+.rv-top{display:flex;justify-content:space-between;align-items:center}
+.rv-text{margin:2px 0;line-height:1.45;white-space:pre-wrap}
+.rv-photo{width:100%;max-height:320px;object-fit:cover;border-radius:14px;margin-top:4px}
+.rv-reply{background:var(--sand);border-radius:12px;padding:10px 12px;font-size:14px;line-height:1.45}
+.rv-hidden{opacity:.55}
+.rv .row{margin-top:4px}

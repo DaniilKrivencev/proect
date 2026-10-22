@@ -509,4 +509,65 @@ def delete_chat(client_id: int, u=Depends(admin_only)):
     return {"ok": True}
 
 
+# ---------- отзывы ----------
+@app.get("/api/reviews")
+def list_reviews(master_id: int = 0, u=Depends(current_user)):
+    mid = scope_master(u, master_id)
+    where, params = ("WHERE r.master_id=?", (mid,)) if mid else ("", ())
+    if u["role"] == "master":
+        where += " AND r.hidden=0"
+    rows = db.q(db.REVIEW_SQL + f" {where} ORDER BY r.id DESC LIMIT 200", params)
+    rt = db.master_ratings()
+    return {
+        "reviews": [{"id": r["id"], "rating": r["rating"], "text": r["text"], "client": db.first_name(r["client_name"]),
+                     "master_id": r["master_id"], "master": r["master_name"], "service": r["service_name"] or "",
+                     "date": (r["start"] or r["created_at"])[:10], "photo": f"r/{r['photo']}" if r["photo"] else "",
+                     "reply": r["reply"], "reply_by": r["reply_by"], "hidden": bool(r["hidden"])} for r in rows],
+        "ratings": {str(k): {"avg": v[0], "n": v[1]} for k, v in rt.items()},
+    }
+
+
+class ReplyIn(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+
+
+def _review_for(u: dict, review_id: int) -> dict:
+    r = db.get_review(review_id)
+    if not r or (u["role"] == "master" and r["master_id"] != u["master_id"]):
+        raise HTTPException(404, "Отзыв не найден")
+    return r
+
+
+@app.post("/api/reviews/{review_id}/reply")
+async def reply_review(review_id: int, p: ReplyIn, u=Depends(current_user)):
+    r = _review_for(u, review_id)
+    from . import reviews
+    who = u["name"] if u["role"] == "master" else "Салон"
+    await reviews.save_reply(r, p.text.strip(), who)
+    return {"ok": True}
+
+
+@app.post("/api/reviews/{review_id}/hide")
+def hide_review(review_id: int, u=Depends(admin_only)):
+    r = _review_for(u, review_id)
+    db.ex("UPDATE reviews SET hidden=? WHERE id=?", (0 if r["hidden"] else 1, review_id))
+    return {"hidden": not r["hidden"]}
+
+
+PHOTO_RE = re.compile(r"^[0-9a-f]{24}\.jpg$")
+
+
+@app.get("/r/{name}")
+def review_photo(name: str):
+    """Фото к отзыву — открытая ссылка со случайным именем (её видят клиенты в боте)."""
+    from fastapi.responses import FileResponse
+    path = db.REVIEWS_DIR / name
+    if not PHOTO_RE.match(name) or not path.is_file():
+        raise HTTPException(404, "Фото не найдено")
+    r = db.one("SELECT hidden FROM reviews WHERE photo=?", (name,))
+    if not r or r["hidden"]:
+        raise HTTPException(404, "Фото не найдено")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
 app.mount("/", StaticFiles(directory=BASE_DIR / "webapp", html=True), name="webapp")
