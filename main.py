@@ -18,6 +18,7 @@ from app import api, applog, bot as bot_module, config, db, maxbot, notify, remi
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(name)s  %(message)s", datefmt="%H:%M:%S")
 logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)  # не печатать каждый запрос к MAX
 log = logging.getLogger("lunka")
 
 
