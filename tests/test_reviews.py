@@ -228,6 +228,15 @@ async def main():
     assert tc.delete(f"/api/reviews/{imp['id']}", headers=H).status_code == 200
     assert not db.get_review(imp["id"]) and not (db.REVIEWS_DIR / imp["photo"]).exists()
 
+    # 11. Канал с отзывами: ссылка из профиля → кнопка у клиентов
+    bad = tc.put("/api/salon", headers=H, json={"salon_name": "Салон", "reviews_link": "javascript:alert(1)"})
+    assert bad.status_code == 422
+    assert tc.put("/api/salon", headers=H, json={"salon_name": "Салон", "reviews_link": "@otzyvy_ani"}).status_code == 200
+    assert db.settings()["reviews_link"] == "https://t.me/otzyvy_ani"
+    session.sent.clear()
+    await dp.feed_update(bot, msg(CLIENT, bot_module.B_REVIEWS))
+    assert any("https://t.me/otzyvy_ani" in str(s_[3]) for s_ in session.sent), session.sent
+
     print("✅ Отзывы: бот, ссылка для клиентов без бота, фото, ответ мастера, рейтинг, кабинет — всё работает; при удалении клиента отзывы остаются")
 
 

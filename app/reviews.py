@@ -281,6 +281,12 @@ async def show_masters(message: Message, edit: bool, uid: int | None = None):
         rows = [[btn(f"{m['name']} · {db.stars(m['avg'], m['n'])}", ShowRev(m=m["id"]))] for m in ms]
     if uid and db.reviewable_visits(uid):
         rows.insert(0, [btn("✍️ Оставить отзыв о визите", "rv_write")])
+    link = db.settings().get("reviews_link")
+    if link:
+        from aiogram.types import InlineKeyboardButton
+        rows.append([InlineKeyboardButton(text="📢 Все отзывы — в нашем канале", url=link)])
+        if not ms:
+            text = "Все отзывы о нас — в нашем канале 👇"
     await (safe_edit(message, text, kb(rows)) if edit else message.answer(text, reply_markup=kb(rows)))
 
 

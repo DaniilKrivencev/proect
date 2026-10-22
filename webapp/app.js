@@ -544,7 +544,7 @@ async function loadSalon() {
   api("api/admin_invite").then((r) => { $("adminList").textContent = "Сейчас: " + r.admins.join(", "); state.adminInvite = r.link; }).catch(() => {});
   const s = state.me.salon;
   $("clientLink").textContent = state.me.link_max ? `Telegram: ${state.me.link}\nMAX: ${state.me.link_max}` : (state.me.link || "Ссылка появится, когда бот запущен");
-  $("pName").value = s.salon_name; $("pAddress").value = s.address; $("pPhone").value = s.phone || ""; $("pAbout").value = s.about; $("pStep").value = String(s.slot_step);
+  $("pName").value = s.salon_name; $("pAddress").value = s.address; $("pPhone").value = s.phone || ""; $("pAbout").value = s.about; $("pStep").value = String(s.slot_step); $("pReviews").value = s.reviews_link || "";
   $("adminCard").hidden = isSolo();
   $("hAbout").textContent = isSolo() ? "О вас" : "О салоне";
   $("lPhone").textContent = isSolo() ? "Телефон для клиентов" : "Телефон салона";
@@ -567,7 +567,7 @@ $("shareLink").onclick = () => {
 $("saveSalon").onclick = async () => {
   try {
     await api("api/salon", { method: "PUT", body: { salon_name: $("pName").value.trim(), address: $("pAddress").value.trim(), phone: $("pPhone").value.trim(),
-      about: $("pAbout").value.trim(), slot_step: Number($("pStep").value) } });
+      about: $("pAbout").value.trim(), slot_step: Number($("pStep").value), reviews_link: $("pReviews").value.trim() } });
     toast("Сохранено"); loadMe();
   } catch (e) { fail(e); }
 };

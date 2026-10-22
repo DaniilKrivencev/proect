@@ -135,7 +135,7 @@ def me(u=Depends(current_user)):
     own = db.own_master(u["tg_id"]) if u["role"] == "admin" else None
     return {"role": u["role"], "name": u["name"], "master_id": u["master_id"], "niche": niche,
             "mode": "solo" if db.is_solo() else "salon", "own_master_id": own["id"] if own else None,
-            "salon": {k: s.get(k, "") for k in ("salon_name", "address", "phone", "about", "slot_step")},
+            "salon": {k: s.get(k, "") for k in ("salon_name", "address", "phone", "about", "slot_step", "reviews_link")},
             "link": link, "next": nxt,
             "link_max": f"https://max.ru/{runtime['max_username']}" if runtime.get("max_username") else "", "today": now.date().isoformat(),
             "unread_chats": unread if u["role"] == "admin" else 0,
@@ -150,10 +150,17 @@ class SalonIn(BaseModel):
     phone: str = Field(default="", max_length=30)
     about: str = Field(default="", max_length=500)
     slot_step: int = Field(default=30, ge=10, le=120)
+    reviews_link: str = Field(default="", max_length=200, pattern=r"^(|https?://\S+|t\.me/\S+|@[\w_]{4,})$")
 
 
 @app.put("/api/salon")
 def update_salon(p: SalonIn, u=Depends(admin_only)):
+    link = p.reviews_link.strip()
+    if link.startswith("@"):
+        link = "https://t.me/" + link[1:]
+    elif link.startswith("t.me/"):
+        link = "https://" + link
+    p.reviews_link = link
     for k, v in p.model_dump().items():
         db.set_setting(k, v.strip() if isinstance(v, str) else v)
     return {"ok": True}
