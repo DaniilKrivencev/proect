@@ -33,6 +33,7 @@ START_SALON = None
 
 
 DISABLE_SALON = ENABLE_SALON = REMOVE_SALON = None
+BACKUP = None  # полная копия сервиса (manager.make_backup)
 
 
 class AddSalon(StatesGroup):
@@ -201,6 +202,7 @@ async def pick_salon(cb: CallbackQuery):
             [_btn(ROLES["owner"], f"dv:r:{slug}:owner")],
             [_btn(ROLES["master"], f"dv:m:{slug}")],
             [_btn("👑 Владелец салона", f"dv:own:{slug}")],
+            [_btn("🧹 Подготовить к выдаче заказчику", f"dv:clean:{slug}")],
             [_btn("⏸ Отключить", f"dv:off:{slug}"), _btn("🗑 Удалить", f"dv:del:{slug}")],
             [_btn("◀️ Назад", "dv:home")]]
     await cb.message.edit_text(f"Салон «{s['name']}». В какой роли войти?", reply_markup=_kb(rows))
@@ -636,6 +638,7 @@ class Danger(StatesGroup):
     new_pin = State()
     pin = State()
     confirm_name = State()
+    clean_choice = State()
 
 
 def _pin_hash(pin: str, salt: str) -> str:
@@ -651,10 +654,10 @@ def check_pin(pin: str) -> bool:
     return bool(d.get("pin_hash")) and _secrets.compare_digest(_pin_hash(pin, d.get("pin_salt", "")), d["pin_hash"])
 
 
-ACTIONS = {"off": "⏸ отключить", "on": "▶️ включить", "del": "🗑 удалить"}
+ACTIONS = {"off": "⏸ отключить", "on": "▶️ включить", "del": "🗑 удалить", "clean": "🧹 очистить от тестовых данных"}
 
 
-@router.callback_query(F.data.regexp(r"^dv:(off|on|del):"))
+@router.callback_query(F.data.regexp(r"^dv:(off|on|del|clean):"))
 async def danger_start(cb: CallbackQuery, state: FSMContext):
     if not _allowed(cb):
         await cb.answer()
@@ -735,6 +738,13 @@ async def danger_pin(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("Салон не найден.")
         return
+    if d["action"] == "clean":
+        await state.set_state(Danger.clean_choice)
+        await message.answer(_clean_preview(s), reply_markup=_kb([
+            [_btn("🧹 Очистить, мастеров отвязать", "dv:cl:unlink")],
+            [_btn("🧹 Очистить, подключения мастеров оставить", "dv:cl:keep")],
+            [_btn("Отмена", "dv:danger_cancel")]]))
+        return
     if d["action"] == "del":
         await state.set_state(Danger.confirm_name)
         await message.answer(f"⚠️ Удаление: бот «{html.escape(s['name'])}» перестанет работать, салон пропадёт из списка. "
@@ -766,3 +776,97 @@ async def danger_confirm(message: Message, state: FSMContext):
     await message.answer(f"🗑 Салон «{html.escape(s['name'])}» удалён.\nДанные в архиве на сервере: <code>archive/{archived}</code>\n"
                          "Вернуть: переложить эту папку в tenants/ под старым именем и перезапустить сервис.",
                          reply_markup=_kb([[_btn("◀️ К салонам", "dv:home")]]))
+
+
+# ======================================================================
+#  🧹 Подготовить к выдаче: стереть тестовые записи, клиентов, чаты,
+#  отзывы, владельца — мастера, услуги, графики и данные салона остаются
+# ======================================================================
+CLEAN_TABLES = ("bookings", "clients", "messages", "relay", "logins", "reviews", "admins")
+CLEAN_SETTINGS = ("dev_mode", "admin_invite", "admin_digest", "owner_username", "owner_code", "owner_mode", "mode")
+
+
+def _count(c, table: str) -> int:
+    try:
+        return c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    except sqlite3.Error:
+        return 0
+
+
+def _clean_preview(s: dict) -> str:
+    with _db(s["db"]) as c:
+        n = {t: _count(c, t) for t in ("bookings", "clients", "messages", "reviews", "admins", "masters", "services")}
+        linked = c.execute("SELECT COUNT(*) FROM masters WHERE active=1 AND tg_id IS NOT NULL").fetchone()[0]
+    return (f"🧹 <b>Подготовка «{html.escape(s['name'])}» к выдаче</b>\n\n"
+            f"<b>Удалю:</b>\n• записи — {n['bookings']}\n• клиенты — {n['clients']}\n• сообщения в чатах — {n['messages']}\n"
+            f"• отзывы (и их фото) — {n['reviews']}\n• владельцы/администраторы — {n['admins']}\n"
+            "• режим техподдержки, ссылки входа, ожидание владельца\n\n"
+            f"<b>Оставлю:</b> мастеров ({n['masters']}), услуги и цены ({n['services']}), графики, выходные, "
+            "название, адрес, телефон, описание, ссылку на отзывы.\n\n"
+            f"Telegram подключён у мастеров: {linked}. Если это вы или тестовые аккаунты — выберите «отвязать»: "
+            "у мастеров будут новые ссылки-приглашения.\n\nПеред очисткой сделаю полную копию.")
+
+
+def clean_salon(db_path: Path, unlink_masters: bool) -> dict:
+    with _db(db_path) as c:
+        done = {t: _count(c, t) for t in CLEAN_TABLES}
+        for t in CLEAN_TABLES:
+            try:
+                c.execute(f"DELETE FROM {t}")
+            except sqlite3.Error:
+                pass
+        c.execute(f"UPDATE settings SET value='' WHERE key IN ({','.join('?' * len(CLEAN_SETTINGS))})", CLEAN_SETTINGS)
+        c.execute("UPDATE masters SET last_digest=''")
+        if unlink_masters:
+            for (mid,) in c.execute("SELECT id FROM masters").fetchall():
+                c.execute("UPDATE masters SET tg_id=NULL, invite=? WHERE id=?", (_secrets.token_hex(5), mid))
+        c.execute("DELETE FROM sqlite_sequence WHERE name IN ('bookings','clients','messages','reviews')")
+        c.commit()
+    photos = db_path.parent / "reviews"
+    if photos.is_dir():
+        for f in photos.glob("*"):
+            f.unlink(missing_ok=True)
+    try:
+        with _db(db_path) as c:
+            c.execute("VACUUM")
+    except sqlite3.Error:
+        pass  # салон сейчас пишет в базу — место освободится позже, на данные не влияет
+    return done
+
+
+@router.callback_query(Danger.clean_choice, F.data.in_({"dv:cl:unlink", "dv:cl:keep"}))
+async def clean_go(cb: CallbackQuery, state: FSMContext):
+    if not _allowed(cb):
+        await cb.answer()
+        return
+    d = await state.get_data()
+    await state.clear()
+    s = _salon(d.get("slug", ""))
+    if not s:
+        await cb.answer("Салон не найден", show_alert=True)
+        return
+    await cb.answer("Делаю копию и очищаю…")
+    await cb.message.edit_text("⏳ Делаю копию и очищаю…")
+    backup = ""
+    if BACKUP:
+        try:
+            backup = Path(await asyncio.to_thread(BACKUP)).name
+        except Exception as e:
+            await cb.message.answer(f"❌ Копия не получилась ({e}) — очистку не делаю, ничего не изменилось.")
+            return
+    try:
+        done = clean_salon(s["db"], cb.data == "dv:cl:unlink")
+    except sqlite3.Error as e:
+        await cb.message.answer(f"❌ Не получилось очистить: {e}")
+        return
+    log.warning("Салон [%s] подготовлен к выдаче: записей %s, клиентов %s, отзывов %s",
+                s["slug"], done["bookings"], done["clients"], done["reviews"])
+    _, _, n_masters = _owner_info(s["db"])
+    await cb.message.answer(
+        f"✅ «{html.escape(s['name'])}» чистый: удалено записей — {done['bookings']}, клиентов — {done['clients']}, "
+        f"отзывов — {done['reviews']}, владельцев — {done['admins']}.\n"
+        "Мастера, услуги и графики на месте." +
+        ("\nУ мастеров новые ссылки-приглашения — их увидит владелец в кабинете → «Мастера»." if cb.data == "dv:cl:unlink" else "") +
+        (f"\nКопия до очистки: <code>backups/{backup}</code>" if backup else "") +
+        "\n\n<b>Теперь назначьте владельца</b> — как работает заказчик?",
+        reply_markup=_owner_kb(s["slug"], solo_ok=n_masters <= 1))

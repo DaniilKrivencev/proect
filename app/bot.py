@@ -337,7 +337,11 @@ async def become_owner(message: Message, user, solo: bool):
     from .applog import events
     if solo:
         if not db.own_master(uid):
-            db.create_master(full_name(user), "", uid)  # частный мастер = владелец и единственный мастер
+            ms = db.masters()
+            if len(ms) == 1 and not ms[0]["tg_id"]:  # салон подготовили заранее: мастер с услугами уже есть
+                db.ex("UPDATE masters SET tg_id=? WHERE id=?", (uid, ms[0]["id"]))
+            else:
+                db.create_master(full_name(user), "", uid)  # частный мастер = владелец и единственный мастер
         events.info("👑 Владелец подключился (частный мастер): %s", full_name(user))
         await message.answer(
             "🎉 Готово! Ваша запись работает.\n\n"

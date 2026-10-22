@@ -760,6 +760,7 @@ async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
     adminbot.DISABLE_SALON = disable
     adminbot.ENABLE_SALON = enable
     adminbot.REMOVE_SALON = remove
+    adminbot.BACKUP = lambda: make_backup(quiet=True)
     try:
         await asyncio.gather(applog.run(listen=True), adminbot.run(), nightly_backups(log),
                              *(r.run(log) for r in runners.values()))
