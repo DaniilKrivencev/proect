@@ -102,10 +102,10 @@
         <button class="ghost wide" id="addService">+ Добавить услугу</button>
       </div>
       <div class="card">
-        <h3>О салоне</h3>
+        <h3 id="hAbout">О салоне</h3>
         <label>Название<input id="pName" maxlength="80"></label>
         <label>Адрес<input id="pAddress" maxlength="200" placeholder="ул. Цветочная, 7, вход со двора"></label>
-        <label>Телефон салона<input id="pPhone" type="tel" maxlength="30" placeholder="+7 900 123-45-67"></label>
+        <label><span id="lPhone">Телефон салона</span><input id="pPhone" type="tel" maxlength="30" placeholder="+7 900 123-45-67"></label>
         <label>Пара слов для клиентов<textarea id="pAbout" maxlength="500" rows="2" placeholder=""></textarea></label>
         <label>Шаг записи
           <select id="pStep">
@@ -126,6 +126,14 @@
         </div>
       </div>
       <div class="card">
+        <h3>Как вы работаете</h3>
+        <p class="muted small" id="modeNote"></p>
+        <div class="seg" id="modeSeg">
+          <button data-mode="solo">Сам(а) на себя</button>
+          <button data-mode="salon">Салон с мастерами</button>
+        </div>
+      </div>
+      <div class="card" id="adminCard">
         <h3>Администраторы</h3>
         <p class="muted small">Директор или администратор увидит все записи и сможет отвечать клиенткам. Отправьте ему одноразовую ссылку-приглашение.</p>
         <div class="small" id="adminList"></div>

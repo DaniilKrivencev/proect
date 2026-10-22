@@ -80,6 +80,9 @@ const PH_BY_NICHE = {
 const PH = () => PH_BY_NICHE[state.me?.niche] || PH_BY_NICHE.nails;
 const state = { me: null, masters: [], services: [], day: iso(new Date()), master: 0, clients: [], clientFilter: "all" };
 const isAdmin = () => state.me?.role === "admin";
+// Частный мастер: владелец и единственный мастер в одном лице — интерфейс без «Мастеров» и «Администраторов»
+const isSolo = () => isAdmin() && state.me?.mode === "solo";
+const myMasterId = () => (isAdmin() ? state.me?.own_master_id : state.me?.master_id);
 const masterById = (id) => state.masters.find((m) => m.id === id);
 
 // ---------- сеть ----------
@@ -135,8 +138,10 @@ const LOADERS = { bookings: () => loadDay(), chats: () => loadChats(), masters: 
   clients: () => loadClients(), salon: () => loadSalon(), myschedule: () => loadMySchedule(), reviews: () => loadReviews() };
 
 function buildTabs() {
-  const tabs = isAdmin() ? ["bookings", "chats", "masters", "clients", "reviews", "salon"] : ["bookings", "clients", "reviews", "myschedule"];
-  $("tabs").innerHTML = tabs.map((t, i) => `<button data-tab="${t}" class="${i ? "" : "active"}"><svg viewBox="0 0 24 24">${ICONS[t]}</svg>${LABELS[t]}${t === "chats" ? '<span class="count" id="chatCount" hidden></span>' : ""}</button>`).join("");
+  const tabs = isSolo() ? ["bookings", "chats", "clients", "reviews", "myschedule", "salon"]
+    : isAdmin() ? ["bookings", "chats", "masters", "clients", "reviews", "salon"] : ["bookings", "clients", "reviews", "myschedule"];
+  const label = (t) => (t === "salon" && isSolo() ? "Профиль" : LABELS[t]);
+  $("tabs").innerHTML = tabs.map((t, i) => `<button data-tab="${t}" class="${i ? "" : "active"}"><svg viewBox="0 0 24 24">${ICONS[t]}</svg>${label(t)}${t === "chats" ? '<span class="count" id="chatCount" hidden></span>' : ""}</button>`).join("");
   $("tabs").querySelectorAll("button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
   updateChatBadge();
 }
@@ -160,7 +165,7 @@ async function loadMe() {
   $("salonName").textContent = me.salon.salon_name;
   document.title = me.salon.salon_name + " — кабинет";
   $("pAbout").placeholder = PH().about;
-  $("whoAmI").textContent = isAdmin() ? "Кабинет владельца" : `Мастер ${me.name}`;
+  $("whoAmI").textContent = isSolo() ? "Мой кабинет" : isAdmin() ? "Кабинет владельца" : `Мастер ${me.name}`;
   const n = me.next;
   if (n) {
     const d = fromIso(n.start), diff = (d - fromIso(me.today)) / 864e5;
@@ -169,25 +174,25 @@ async function loadMe() {
       <div class="next-label">Ближайшая запись</div>
       <div class="next-time">${n.start.slice(11)}<small>${when}</small></div>
       <div class="next-who">${esc(n.client_name)}</div>
-      <div class="next-what">${esc(n.service_name)}${isAdmin() ? ` · мастер ${esc(n.master_name)}` : ""}${n.client_phone ? ` · <a href="tel:${esc(n.client_phone)}">${esc(n.client_phone)}</a>` : ""}</div>
+      <div class="next-what">${esc(n.service_name)}${isAdmin() && !isSolo() ? ` · мастер ${esc(n.master_name)}` : ""}${n.client_phone ? ` · <a href="tel:${esc(n.client_phone)}">${esc(n.client_phone)}</a>` : ""}</div>
     </div>`;
   } else {
     $("next").innerHTML = `<div class="next empty-next">
       <div class="next-label">Ближайших записей нет</div>
       <div class="next-time">Окошки свободны — самое время позвать клиентов</div>
-      <div class="next-what">${isAdmin() ? "Ссылка для записи — во вкладке «Салон»" : "Новые записи придут вам в Telegram"}</div>
+      <div class="next-what">${isSolo() ? "Ссылка для записи — во вкладке «Профиль»" : isAdmin() ? "Ссылка для записи — во вкладке «Салон»" : "Новые записи придут вам в Telegram"}</div>
     </div>`;
   }
   const s = me.stats;
   $("stats").innerHTML = `
     <div class="stat"><b>${money(s.month_revenue)}</b><span>за этот месяц</span></div>
     <div class="stat"><b>${s.upcoming}</b><span>${plural(s.upcoming, "запись впереди", "записи впереди", "записей впереди")}</span></div>
-    ${isAdmin() ? `<div class="stat"><b>${s.masters}</b><span>${plural(s.masters, "мастер", "мастера", "мастеров")}</span></div>` : ""}`;
+    ${isAdmin() && !isSolo() ? `<div class="stat"><b>${s.masters}</b><span>${plural(s.masters, "мастер", "мастера", "мастеров")}</span></div>` : ""}`;
 }
 
 // ---------- записи ----------
 function renderMasterChips() {
-  if (!isAdmin()) { $("masterChips").hidden = true; return; }
+  if (!isAdmin() || isSolo()) { $("masterChips").hidden = true; return; }
   const chips = [`<button class="chip ${state.master ? "" : "active"}" data-m="0">Все мастера</button>`]
     .concat(state.masters.map((m) => `<button class="chip ${state.master === m.id ? "active" : ""}" data-m="${m.id}">${avatar(m)}${esc(m.name)}</button>`));
   $("masterChips").innerHTML = chips.join("");
@@ -208,7 +213,7 @@ async function renderDays() {
 }
 
 async function loadDay() {
-  if (!isAdmin()) state.master = state.me.master_id;
+  if (!isAdmin() || isSolo()) state.master = myMasterId();
   renderMasterChips();
   await renderDays();
   const data = await api(`api/bookings?day=${state.day}&master_id=${state.master}`);
@@ -418,12 +423,13 @@ $("addMaster").onclick = () => {
 // ---------- мой график (мастер) ----------
 async function loadMySchedule() {
   await refreshMasters();
-  const m = masterById(state.me.master_id);
+  const m = masterById(myMasterId());
+  if (!m) { $("mySchedule").innerHTML = `<div class="empty">Мастер не найден</div>`; return; }
   $("mySchedule").innerHTML = scheduleRows(m.schedule);
   bindSchedule($("mySchedule"));
 }
 $("saveMySchedule").onclick = async () => {
-  try { await api(`api/masters/${state.me.master_id}`, { method: "PUT", body: { schedule: readSchedule($("mySchedule")) } }); toast("График сохранён"); }
+  try { await api(`api/masters/${myMasterId()}`, { method: "PUT", body: { schedule: readSchedule($("mySchedule")) } }); toast("График сохранён"); }
   catch (e) { fail(e); }
 };
 
@@ -539,6 +545,10 @@ async function loadSalon() {
   const s = state.me.salon;
   $("clientLink").textContent = state.me.link_max ? `Telegram: ${state.me.link}\nMAX: ${state.me.link_max}` : (state.me.link || "Ссылка появится, когда бот запущен");
   $("pName").value = s.salon_name; $("pAddress").value = s.address; $("pPhone").value = s.phone || ""; $("pAbout").value = s.about; $("pStep").value = String(s.slot_step);
+  $("adminCard").hidden = isSolo();
+  $("hAbout").textContent = isSolo() ? "О вас" : "О салоне";
+  $("lPhone").textContent = isSolo() ? "Телефон для клиентов" : "Телефон салона";
+  renderMode();
   const sc = $("supportCard");
   if (sc) {
     sc.style.display = state.me.support_access ? "" : "none";
@@ -691,9 +701,9 @@ async function loadReviews() {
   const head = isAdmin() ? (total ? { avg, n: total } : null) : mine;
   $("reviewSummary").innerHTML = head
     ? `<div class="card rv-head"><div class="rv-big">${String(head.avg).replace(".", ",")}</div><div><div class="rv-stars">${starLine(Math.round(head.avg))}</div>
-       <div class="muted small">${head.n} ${plural(head.n, "отзыв", "отзыва", "отзывов")}${isAdmin() ? " по салону" : ""}</div></div></div>`
+       <div class="muted small">${head.n} ${plural(head.n, "отзыв", "отзыва", "отзывов")}${isAdmin() && !isSolo() ? " по салону" : ""}</div></div></div>`
     : "";
-  if (isAdmin()) {
+  if (isAdmin() && !isSolo()) {
     $("reviewChips").hidden = false;
     $("reviewChips").innerHTML = [`<button class="chip ${state.reviewMaster ? "" : "active"}" data-m="0">Все мастера</button>`]
       .concat(state.masters.map((m) => `<button class="chip ${state.reviewMaster === m.id ? "active" : ""}" data-m="${m.id}">${avatar(m)}${esc(m.name)}${ratings[m.id] ? ` · ★ ${fmtRating(ratings[m.id])}` : ""}</button>`)).join("");
@@ -708,7 +718,7 @@ async function loadReviews() {
     <div class="card rv ${r.hidden ? "rv-hidden" : ""}">
       <div class="rv-top"><span class="rv-stars">${starLine(r.rating)}</span><span class="muted small">${r.date.slice(8, 10)}.${r.date.slice(5, 7)}</span></div>
       <div class="title">${esc(r.client)}${r.service ? ` <span class="muted small">· ${esc(r.service)}</span>` : ""}</div>
-      ${isAdmin() && !state.reviewMaster ? `<div class="muted small">Мастер ${esc(r.master)}</div>` : ""}
+      ${isAdmin() && !isSolo() && !state.reviewMaster ? `<div class="muted small">Мастер ${esc(r.master)}</div>` : ""}
       ${r.text ? `<p class="rv-text">${esc(r.text)}</p>` : ""}
       ${r.photo ? `<a href="${esc(r.photo)}" target="_blank"><img class="rv-photo" src="${esc(r.photo)}" alt="Фото к отзыву" loading="lazy"></a>` : ""}
       ${r.reply ? `<div class="rv-reply"><b>${esc(r.reply_by || "Салон")}:</b> ${esc(r.reply)}</div>` : ""}
@@ -738,3 +748,23 @@ function openReply(r) {
     catch (e) { fail(e); }
   };
 }
+
+
+// ---------- формат работы ----------
+function renderMode() {
+  const solo = state.me.mode === "solo";
+  document.querySelectorAll("#modeSeg button").forEach((b) => b.classList.toggle("active", b.dataset.mode === state.me.mode));
+  $("modeNote").textContent = solo
+    ? "Вы принимаете клиентов сами: один график, без списка мастеров. Наняли мастеров — переключитесь на «Салон»."
+    : "У вас салон: у каждого мастера свои услуги, график и записи.";
+}
+document.querySelectorAll("#modeSeg button").forEach((b) => (b.onclick = async () => {
+  if (b.dataset.mode === state.me.mode) return;
+  const toSolo = b.dataset.mode === "solo";
+  if (!(await confirmBox(toSolo ? "Перейти на формат «Сам(а) на себя»? Вкладка «Мастера» скроется, график будет только ваш."
+    : "Перейти на формат «Салон с мастерами»? Появится вкладка «Мастера» — там можно добавить сотрудников."))) return;
+  try {
+    await api("api/mode", { method: "POST", body: { mode: b.dataset.mode } });
+    await loadMe(); await refreshMasters(); buildTabs(); showTab("salon"); toast("Готово");
+  } catch (e) { fail(e); }
+}));

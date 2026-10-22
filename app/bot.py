@@ -175,6 +175,15 @@ NO_CABINET = "\n\n<i>Кабинет сейчас недоступен: не за
 async def show_admin_home(message: Message, tg_id: int):
     await set_menu_button(message.bot, tg_id)
     s = salon()
+    if db.is_solo():
+        await message.answer(
+            f"{N['emoji']} Ваш кабинет «{s['salon_name']}».\n\n"
+            "Здесь ваши записи, клиенты, отзывы, прайс и график. Новые записи и сообщения клиентов приходят сюда же."
+            f"{'' if runtime['webapp_url'] else NO_CABINET}",
+            reply_markup=kb(cabinet_button() + [[btn("📅 Записи на сегодня и завтра", "today")],
+                                                [btn("🔗 Ссылка для клиентов", "link")],
+                                                [btn("❓ Как это работает", "help_staff")]]))
+        return
     warn = "" if db.masters() else ("\n\n⚠️ <b>Первый шаг:</b> откройте кабинет → «Мастера» и добавьте мастеров. "
                                     "Пока мастеров нет, клиенты не смогут записаться.")
     await message.answer(
@@ -269,38 +278,58 @@ async def start_plain(message: Message, state: FSMContext):
     if master:
         await show_master_home(message, master)
         return
-    if not db.admins():
+    if not db.admins() and not db.dev_mode(uid):  # техподдержку подключать салон не просим
         await message.answer(
-            f"Здравствуйте! Это онлайн-запись для салона ({N['title']}).\n\n"
-            "• Клиенты сами выбирают услугу, мастера и время\n"
-            "• Напоминания за сутки и за 2 часа — меньше неявок\n"
-            "• Мастера получают свои записи в мессенджер\n"
-            "• Вся база клиентов и выручка — в одном кабинете\n\n"
-            "Вы владелец или администратор салона? Подключите его:",
-            reply_markup=kb([[btn("🌸 Подключить салон", "reg")]]))
+            f"Здравствуйте! 👋 Это ваша онлайн-запись в Telegram и MAX.\n\n"
+            "📲 Клиенты записываются сами — круглосуточно\n"
+            "⏰ Бот напоминает им о визите\n"
+            "⭐ Собирает отзывы с фото\n"
+            "📊 Записи, клиенты и выручка — в кабинете прямо здесь\n\n"
+            "<b>Как вы работаете?</b> От этого зависит, каким будет ваш кабинет 👇",
+            reply_markup=kb([[btn(f"{N['emoji']} Я мастер — работаю на себя", "reg:solo")],
+                             [btn("🏠 У меня салон с мастерами", "reg:salon")]]))
         return
     await client_welcome(message)
 
 
-@router.callback_query(F.data == "reg")
+@router.callback_query(F.data.in_({"reg", "reg:solo", "reg:salon"}))
 async def register(cb: CallbackQuery):
-    if db.admins() and not db.is_admin(cb.from_user.id):
-        await cb.answer("Салон уже подключён", show_alert=True)
+    uid = cb.from_user.id
+    if db.dev_mode(uid):
+        await cb.answer("В режиме техподдержки салон не подключают — это делает владелец", show_alert=True)
         return
-    db.add_admin(cb.from_user.id, full_name(cb.from_user))
+    if db.admins() and not db.is_admin(uid):
+        await cb.answer("Уже подключено", show_alert=True)
+        return
+    solo = cb.data == "reg:solo"
+    db.add_admin(uid, full_name(cb.from_user))
+    db.set_setting("mode", "solo" if solo else "salon")
     from .applog import events
-    events.info("🏠 Салон подключён, владелец: %s", full_name(cb.from_user))
-    await cb.answer("Салон подключён!")
-    await cb.message.answer(
-        "🎉 Салон подключён, вы — владелец.\n\n"
-        "Что сделать дальше:\n"
-        "1. Откройте <b>кабинет</b> → «Салон»: название, адрес, телефон.\n"
-        "2. «Мастера» → добавьте мастеров, отметьте их услуги и график.\n"
-        "3. Каждому мастеру отправьте его ссылку-приглашение — так он будет получать свои записи.\n"
-        "4. «Услуги» — там уже есть стартовый прайс, поправьте цены под себя.\n"
-        "5. Ссылку на бота поставьте в профиль салона, VK, на Яндекс Карты и в 2ГИС.",
-        reply_markup=kb([[btn(f"{N['emoji']} Я тоже мастер — добавить себя", "self_master")]]))
-    await show_admin_home(cb.message, cb.from_user.id)
+    await cb.answer("Готово!")
+    if solo:
+        if not db.own_master(uid):
+            db.create_master(full_name(cb.from_user), "", uid)  # частный мастер = владелец и единственный мастер
+        events.info("🏠 Подключён частный мастер: %s", full_name(cb.from_user))
+        await cb.message.answer(
+            "🎉 Готово! Ваша запись работает.\n\n"
+            "<b>Осталось 3 шага — 5 минут:</b>\n"
+            "1. Откройте <b>кабинет</b> → «Профиль»: название, адрес, телефон.\n"
+            "2. Там же — «Услуги и цены»: поправьте стартовый прайс под себя.\n"
+            "3. Вкладка «График» — дни и часы, когда принимаете.\n\n"
+            "Потом поставьте ссылку для записи в профиль Telegram, Instagram, VK, на Яндекс Карты и в 2ГИС — "
+            "кнопка «🔗 Ссылка для клиентов» ниже.")
+    else:
+        events.info("🏠 Салон подключён, владелец: %s", full_name(cb.from_user))
+        await cb.message.answer(
+            "🎉 Салон подключён, вы — владелец.\n\n"
+            "Что сделать дальше:\n"
+            "1. Откройте <b>кабинет</b> → «Салон»: название, адрес, телефон.\n"
+            "2. «Мастера» → добавьте мастеров, отметьте их услуги и график.\n"
+            "3. Каждому мастеру отправьте его ссылку-приглашение — так он будет получать свои записи.\n"
+            "4. «Салон» → «Услуги и цены» — там уже есть стартовый прайс, поправьте цены под себя.\n"
+            "5. Ссылку на бота поставьте в профиль салона, VK, на Яндекс Карты и в 2ГИС.",
+            reply_markup=kb([[btn(f"{N['emoji']} Я тоже мастер — добавить себя", "self_master")]]))
+    await show_admin_home(cb.message, uid)
 
 
 @router.callback_query(F.data == "self_master")

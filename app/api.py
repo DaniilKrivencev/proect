@@ -132,7 +132,9 @@ def me(u=Depends(current_user)):
     link = f"https://t.me/{runtime['bot_username']}" if runtime["bot_username"] else ""
     unread = db.one("SELECT COUNT(DISTINCT client_id) AS n FROM messages WHERE direction='in' AND is_read=0")["n"]
     from .niche import KEY as niche
+    own = db.own_master(u["tg_id"]) if u["role"] == "admin" else None
     return {"role": u["role"], "name": u["name"], "master_id": u["master_id"], "niche": niche,
+            "mode": "solo" if db.is_solo() else "salon", "own_master_id": own["id"] if own else None,
             "salon": {k: s.get(k, "") for k in ("salon_name", "address", "phone", "about", "slot_step")},
             "link": link, "next": nxt,
             "link_max": f"https://max.ru/{runtime['max_username']}" if runtime.get("max_username") else "", "today": now.date().isoformat(),
@@ -155,6 +157,25 @@ def update_salon(p: SalonIn, u=Depends(admin_only)):
     for k, v in p.model_dump().items():
         db.set_setting(k, v.strip() if isinstance(v, str) else v)
     return {"ok": True}
+
+
+class ModeIn(BaseModel):
+    mode: str = Field(pattern="^(solo|salon)$")
+
+
+@app.post("/api/mode")
+def set_mode(p: ModeIn, u=Depends(admin_only)):
+    """Формат работы: частный мастер (solo) или салон с мастерами (salon)."""
+    if p.mode == "solo":
+        own = db.own_master(u["tg_id"])
+        others = [m for m in db.masters() if not own or m["id"] != own["id"]]
+        if others:
+            raise HTTPException(409, f"В салоне есть другие мастера ({', '.join(m['name'] for m in others)}). "
+                                     "Чтобы работать одной/одному — сначала удалите их во вкладке «Мастера».")
+        if not own:
+            db.create_master(u["name"] or "Мастер", "", u["tg_id"])
+    db.set_setting("mode", p.mode)
+    return {"mode": p.mode}
 
 
 # ---------- услуги ----------

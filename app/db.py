@@ -128,6 +128,7 @@ DEFAULT_SETTINGS = {
     "slot_step": "30",
     "admin_digest": "",
     "admin_invite": "",
+    "mode": "",          # solo — мастер работает сам на себя; salon (или пусто) — салон с мастерами
 }
 
 DEFAULT_SCHEDULE = {0: ("10:00", "20:00"), 1: ("10:00", "20:00"), 2: ("10:00", "20:00"),
@@ -501,3 +502,13 @@ def reviewable_visits(client_tg: int, days: int = 60) -> list[dict]:
     return q(BOOKING_SQL + """ WHERE c.tg_id=? AND b.status='active' AND b.start>=? AND b.start<?
              AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.booking_id=b.id AND r.text!='') ORDER BY b.start DESC LIMIT 5""",
              (client_tg, since, now.strftime("%Y-%m-%d %H:%M")))
+
+
+# ---------- формат работы: частный мастер или салон ----------
+def is_solo() -> bool:
+    return settings().get("mode") == "solo"
+
+
+def own_master(tg_id: int) -> dict | None:
+    """Мастер, которым является сам владелец (у частного мастера — всегда он)."""
+    return one("SELECT * FROM masters WHERE tg_id=? AND active=1", (tg_id,)) if tg_id else None
