@@ -10,6 +10,7 @@
 import asyncio
 import html
 import json
+import re
 import logging
 import sqlite3
 from pathlib import Path
@@ -199,6 +200,7 @@ async def pick_salon(cb: CallbackQuery):
     rows = [[_btn(ROLES["client"], f"dv:r:{slug}:client")],
             [_btn(ROLES["owner"], f"dv:r:{slug}:owner")],
             [_btn(ROLES["master"], f"dv:m:{slug}")],
+            [_btn("👑 Владелец салона", f"dv:own:{slug}")],
             [_btn("⏸ Отключить", f"dv:off:{slug}"), _btn("🗑 Удалить", f"dv:del:{slug}")],
             [_btn("◀️ Назад", "dv:home")]]
     await cb.message.edit_text(f"Салон «{s['name']}». В какой роли войти?", reply_markup=_kb(rows))
@@ -448,16 +450,174 @@ async def finish_add(message: Message, state: FSMContext, max_token: str):
         await message.answer(f"❌ Не получилось добавить салон: {e}")
         return
     link = f"https://t.me/{d['username']}"
+    _BOTS[slug] = d["username"]
     await message.answer(
         f"🎉 <b>Салон «{d['name']}» запущен!</b>\n\n"
         f"Бот: {link}\n" + (f"Кабинет: {cabinet}\n" if cabinet else "") +
         f"Папка на сервере: <code>{slug}</code>\n\n"
-        "<b>Что дальше:</b>\n"
-        "1. Отправьте заказчику ссылку на бота и инструкцию для владельца.\n"
-        "2. Заказчик открывает бота и выбирает «работаю на себя» или «салон» — он станет владельцем.\n"
-        "3. Если есть прайс и мастера в файле — <code>manager.py import</code>.\n\n"
-        "Через минуту салон появится в /status 🟢",
+        "<b>Последний шаг — владелец.</b> Как работает заказчик?",
+        reply_markup=_owner_kb(slug, solo_ok=True, back=False),
         disable_web_page_preview=True)
+
+
+# ======================================================================
+#  👑 Назначить владельца: формат (частник / салон) → @username заказчика
+#  Telegram не отдаёт id по @username, пока человек сам не написал боту,
+#  поэтому сохраняем «ожидание»: кто первым придёт с этим @username
+#  (или по личной ссылке owner_<код>) — тот и владелец, в выбранном формате.
+# ======================================================================
+_BOTS: dict[str, str] = {}  # slug → @бот (для только что созданных, пока нет status.json)
+
+
+class OwnerSet(StatesGroup):
+    username = State()
+
+
+def _owner_kb(slug: str, solo_ok: bool, back: bool = True) -> InlineKeyboardMarkup:
+    rows = []
+    if solo_ok:
+        rows.append([_btn("💅 Частный мастер (работает на себя)", f"dv:ow:{slug}:solo")])
+    rows.append([_btn("🏠 Салон с мастерами", f"dv:ow:{slug}:salon")])
+    if back:
+        rows.append([_btn("◀️ Назад", f"dv:s:{slug}")])
+    return _kb(rows)
+
+
+def _owner_info(db_path: Path) -> tuple[list[str], dict, int]:
+    """(имена владельцев, настройки ожидания, сколько мастеров)"""
+    try:
+        with _db(db_path) as c:
+            names = [r["name"] for r in c.execute("SELECT name FROM admins")]
+            st = {r["key"]: r["value"] for r in c.execute(
+                "SELECT key, value FROM settings WHERE key IN ('owner_username','owner_code','owner_mode','mode')")}
+            n = c.execute("SELECT COUNT(*) FROM masters WHERE active=1").fetchone()[0]
+        return names, st, n
+    except sqlite3.Error:
+        return [], {}, 0  # салон только что создан — база ещё пустая
+
+
+def _save_owner(db_path: Path, mode: str, username: str, code: str):
+    with _db(db_path) as c:
+        c.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        for k, v in (("owner_mode", mode), ("owner_username", username), ("owner_code", code)):
+            c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, v))
+        c.commit()
+
+
+def _bot_of(s: dict) -> str:
+    return s.get("bot") or _BOTS.get(s["slug"], "")
+
+
+MODE_TITLE = {"solo": "💅 частный мастер", "salon": "🏠 салон с мастерами"}
+
+
+@router.callback_query(F.data.startswith("dv:own:"))
+async def owner_menu(cb: CallbackQuery, state: FSMContext):
+    if not _allowed(cb):
+        await cb.answer()
+        return
+    s = _salon(cb.data.split(":", 2)[2])
+    if not s:
+        await cb.answer("Салон не найден", show_alert=True)
+        return
+    await cb.answer()
+    await state.clear()
+    names, st, n_masters = _owner_info(s["db"])
+    text = f"👑 <b>Владелец салона «{s['name']}»</b>\n\n"
+    text += ("Сейчас: " + ", ".join(names) + "\n") if names else "Владельца пока нет.\n"
+    if st.get("owner_code"):
+        who = f"@{st['owner_username']}" if st.get("owner_username") else "по личной ссылке"
+        text += f"⏳ Ждём: {who}, формат — {MODE_TITLE.get(st.get('owner_mode'), '?')}\n"
+        bot = _bot_of(s)
+        if bot:
+            text += f"Ссылка владельца: https://t.me/{bot}?start=owner_{st['owner_code']}\n"
+    text += "\nНазначить (нового) владельца — выберите формат работы заказчика:"
+    solo_ok = n_masters <= 1
+    if not solo_ok:
+        text += "\n<i>«Частный мастер» недоступен: в салоне уже несколько мастеров.</i>"
+    kb = _owner_kb(s["slug"], solo_ok)
+    if st.get("owner_code"):
+        kb.inline_keyboard.insert(-1, [_btn("✖️ Отменить ожидание", f"dv:ow_clear:{s['slug']}")])
+    await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+
+
+@router.callback_query(F.data.startswith("dv:ow_clear:"))
+async def owner_clear(cb: CallbackQuery, state: FSMContext):
+    if not _allowed(cb):
+        await cb.answer()
+        return
+    s = _salon(cb.data.split(":", 2)[2])
+    if s:
+        _save_owner(s["db"], "", "", "")
+    await cb.answer("Ожидание отменено, ссылка больше не работает", show_alert=True)
+    await state.clear()
+    await cb.message.edit_text("✖️ Назначение владельца отменено.",
+                               reply_markup=_kb([[_btn("◀️ К салону", f"dv:s:{cb.data.split(':', 2)[2]}")]]))
+
+
+@router.callback_query(F.data.regexp(r"^dv:ow:[^:]+:(solo|salon)$"))
+async def owner_mode(cb: CallbackQuery, state: FSMContext):
+    if not _allowed(cb):
+        await cb.answer()
+        return
+    _, _, slug, mode = cb.data.split(":")
+    if not _salon(slug):
+        await cb.answer("Салон не найден", show_alert=True)
+        return
+    await cb.answer()
+    await state.set_state(OwnerSet.username)
+    await state.update_data(owner_slug=slug, owner_mode=mode)
+    await cb.message.edit_text(
+        f"Формат: <b>{MODE_TITLE[mode]}</b>\n\n"
+        "Пришлите <b>@username</b> заказчика в Telegram (например @maria_nails).\n"
+        "Когда он откроет бота салона и нажмёт «Запустить» — сразу станет владельцем.\n\n"
+        "Нет username? Нажмите «Только ссылка» — пришлю личную ссылку владельца.",
+        reply_markup=_kb([[_btn("🔗 Только ссылка", "dv:ow_link")], [_btn("◀️ Назад", f"dv:own:{slug}")]]))
+
+
+async def _finish_owner(message: Message, state: FSMContext, username: str):
+    d = await state.get_data()
+    await state.clear()
+    s = _salon(d.get("owner_slug", ""))
+    if not s:
+        await message.answer("Салон не найден.")
+        return
+    code = _secrets.token_hex(5)
+    try:
+        _save_owner(s["db"], d["owner_mode"], username, code)
+    except sqlite3.Error as e:
+        await message.answer(f"❌ Не удалось сохранить: {e}")
+        return
+    bot = _bot_of(s)
+    link = f"https://t.me/{bot}?start=owner_{code}" if bot else f"(бот салона)?start=owner_{code}"
+    who = (f"Как только <b>@{username}</b> откроет бота и нажмёт «Запустить», он станет владельцем.\n"
+           "Или отправьте ему личную ссылку — сработает то, что будет первым:\n") if username else \
+          "Отправьте заказчику эту личную ссылку — кто откроет её первым, станет владельцем:\n"
+    await message.answer(
+        f"✅ Салон «{s['name']}», формат — <b>{MODE_TITLE[d['owner_mode']]}</b>.\n\n" + who + link +
+        "\n\nСсылка одноразовая. Сами по ней не переходите — вы входите через «В какой роли войти».",
+        reply_markup=_kb([[_btn("◀️ К салону", f"dv:s:{s['slug']}")]]),
+        disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "dv:ow_link")
+async def owner_link_only(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    if _allowed(cb) and (await state.get_data()).get("owner_slug"):
+        await _finish_owner(cb.message, state, "")
+
+
+@router.message(OwnerSet.username)
+async def owner_username(message: Message, state: FSMContext):
+    if not _allowed(message):
+        return
+    raw = (message.text or "").strip()
+    m = re.fullmatch(r"(?:https?://)?(?:t\.me/|@)?([A-Za-z][A-Za-z0-9_]{3,31})", raw)
+    if not m:
+        await message.answer("Это не похоже на username. Пришлите в виде @maria_nails или нажмите «Только ссылка».",
+                             reply_markup=_kb([[_btn("🔗 Только ссылка", "dv:ow_link")]]))
+        return
+    await _finish_owner(message, state, m.group(1).lower())
 
 
 

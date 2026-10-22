@@ -233,6 +233,14 @@ async def start_deep(message: Message, command: CommandObject, state: FSMContext
     if command.args == "dev" and message.from_user.id == db.dev_id():
         await dev_enter(message, state)
         return
+    o = re.fullmatch(r"owner_([0-9a-f]+)", command.args or "")
+    if o:
+        st = db.settings()
+        if st.get("owner_code") and o.group(1) == st["owner_code"] and not db.dev_mode(message.from_user.id):
+            await become_owner(message, message.from_user, st.get("owner_mode") == "solo")
+        else:
+            await message.answer("Эта ссылка владельца уже использована или устарела. Напишите разработчику — он пришлёт новую.")
+        return
     a = re.fullmatch(r"admin_([0-9a-f]+)", command.args or "")
     if a and db.admins() and a.group(1) == db.settings().get("admin_invite"):
         db.add_admin(message.from_user.id, full_name(message.from_user))
@@ -274,11 +282,14 @@ async def start_plain(message: Message, state: FSMContext):
     if db.is_admin(uid):
         await show_admin_home(message, uid)
         return
+    if is_reserved_owner(message.from_user) and not db.dev_mode(uid):  # заказчик, которого назначил разработчик
+        await become_owner(message, message.from_user, db.settings().get("owner_mode") == "solo")
+        return
     master = db.master_by_tg(uid)
     if master:
         await show_master_home(message, master)
         return
-    if not db.admins() and not db.dev_mode(uid):  # техподдержку подключать салон не просим
+    if not db.admins() and not db.dev_mode(uid) and not owner_reserved():  # техподдержку подключать салон не просим
         await message.answer(
             f"Здравствуйте! 👋 Это ваша онлайн-запись в Telegram и MAX.\n\n"
             "📲 Клиенты записываются сами — круглосуточно\n"
@@ -298,38 +309,56 @@ async def register(cb: CallbackQuery):
     if db.dev_mode(uid):
         await cb.answer("В режиме техподдержки салон не подключают — это делает владелец", show_alert=True)
         return
-    if db.admins() and not db.is_admin(uid):
+    if (db.admins() and not db.is_admin(uid)) or owner_reserved():
         await cb.answer("Уже подключено", show_alert=True)
         return
-    solo = cb.data == "reg:solo"
-    db.add_admin(uid, full_name(cb.from_user))
-    db.set_setting("mode", "solo" if solo else "salon")
-    from .applog import events
     await cb.answer("Готово!")
+    await become_owner(cb.message, cb.from_user, cb.data == "reg:solo")
+
+
+def owner_reserved() -> bool:
+    """Разработчик заранее назначил владельца (по @username или личной ссылке) — чужим кнопку «подключить» не показываем."""
+    s = db.settings()
+    return bool(s.get("owner_username") or s.get("owner_code"))
+
+
+def is_reserved_owner(user) -> bool:
+    want = (db.settings().get("owner_username") or "").lstrip("@").lower()
+    return bool(want) and (user.username or "").lower() == want
+
+
+async def become_owner(message: Message, user, solo: bool):
+    """Человек становится владельцем: формат «частный мастер» (solo) или «салон с мастерами»."""
+    uid = user.id
+    db.add_admin(uid, full_name(user))
+    db.set_setting("mode", "solo" if solo else "salon")
+    for k in ("owner_username", "owner_code", "owner_mode"):
+        db.set_setting(k, "")  # назначение выполнено — ссылка и @username больше не действуют
+    from .applog import events
     if solo:
         if not db.own_master(uid):
-            db.create_master(full_name(cb.from_user), "", uid)  # частный мастер = владелец и единственный мастер
-        events.info("🏠 Подключён частный мастер: %s", full_name(cb.from_user))
-        await cb.message.answer(
+            db.create_master(full_name(user), "", uid)  # частный мастер = владелец и единственный мастер
+        events.info("👑 Владелец подключился (частный мастер): %s", full_name(user))
+        await message.answer(
             "🎉 Готово! Ваша запись работает.\n\n"
             "<b>Осталось 3 шага — 5 минут:</b>\n"
             "1. Откройте <b>кабинет</b> → «Профиль»: название, адрес, телефон.\n"
-            "2. Там же — «Услуги и цены»: поправьте стартовый прайс под себя.\n"
+            "2. Там же — «Услуги и цены»: " + ("поправьте стартовый прайс под себя.\n" if db.services() else "добавьте свои услуги.\n") +
             "3. Вкладка «График» — дни и часы, когда принимаете.\n\n"
             "Потом поставьте ссылку для записи в профиль Telegram, Instagram, VK, на Яндекс Карты и в 2ГИС — "
             "кнопка «🔗 Ссылка для клиентов» ниже.")
     else:
-        events.info("🏠 Салон подключён, владелец: %s", full_name(cb.from_user))
-        await cb.message.answer(
+        events.info("👑 Владелец подключился (салон): %s", full_name(user))
+        await message.answer(
             "🎉 Салон подключён, вы — владелец.\n\n"
             "Что сделать дальше:\n"
             "1. Откройте <b>кабинет</b> → «Салон»: название, адрес, телефон.\n"
             "2. «Мастера» → добавьте мастеров, отметьте их услуги и график.\n"
             "3. Каждому мастеру отправьте его ссылку-приглашение — так он будет получать свои записи.\n"
-            "4. «Салон» → «Услуги и цены» — там уже есть стартовый прайс, поправьте цены под себя.\n"
+            "4. «Салон» → «Услуги и цены» — " + ("поправьте стартовый прайс под себя.\n" if db.services() else "добавьте свои услуги.\n") +
             "5. Ссылку на бота поставьте в профиль салона, VK, на Яндекс Карты и в 2ГИС.",
             reply_markup=kb([[btn(f"{N['emoji']} Я тоже мастер — добавить себя", "self_master")]]))
-    await show_admin_home(cb.message, uid)
+    await show_admin_home(message, uid)
 
 
 @router.callback_query(F.data == "self_master")
