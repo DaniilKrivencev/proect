@@ -192,6 +192,36 @@ def import_salon(slug: str, file: str):
     print("   Ссылки-приглашения мастеров — в кабинете → «Мастера». График поправьте там же.")
 
 
+TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+                    ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s", "t",
+                     "u", "f", "h", "ts", "ch", "sh", "sch", "", "y", "", "e", "yu", "ya"]))
+
+
+def slugify(name: str, taken) -> str:
+    """«Ногти у Анны» → nogti-u-anny (адрес кабинета: nogti-u-anny.<домен>). Повтор — nogti-u-anny-2."""
+    base = "".join(TRANSLIT.get(ch, ch) for ch in name.lower())
+    base = re.sub(r"[^a-z0-9]+", "-", base).strip("-")[:24].strip("-") or "salon"
+    if not base[0].isalnum():
+        base = "s" + base
+    slug, i = base, 2
+    while slug in taken:
+        slug, i = f"{base}-{i}", i + 1
+    return slug
+
+
+def create_tenant(name: str, niche: str, token: str, max_token: str = "") -> str:
+    """Новый салон одной функцией (её вызывает и бот техподдержки). Возвращает имя папки."""
+    ts = tenants()
+    if any(c.get("BOT_TOKEN") == token for c in ts.values()):
+        raise ValueError("Этот бот уже подключён к другому салону — создайте новый в @BotFather (/newbot)")
+    if max_token and any(c.get("MAX_BOT_TOKEN") == max_token for c in ts.values()):
+        raise ValueError("Этот бот MAX уже подключён к другому салону")
+    slug = slugify(name, ts)
+    write_tenant(slug, {"NAME": name, "NICHE": niche, "BOT_TOKEN": token, "PORT": next_port(ts), "MAX_BOT_TOKEN": max_token})
+    _set_salon_name(TENANTS / slug, name)
+    return slug
+
+
 def next_port(ts: dict[str, dict]) -> int:
     used = {int(c.get("PORT", 0) or 0) for c in ts.values()}
     p = FIRST_PORT
@@ -659,12 +689,29 @@ async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
     print("  Не закрывайте это окно — пока оно открыто, все салоны работают.")
     print("=" * 60 + "\n")
     log(f"🟢 Менеджер запущен, салонов: {len(runners)} ({', '.join(runners)})")
+    started: list[asyncio.Task] = []
+
+    async def start_new(slug: str) -> str:
+        """Запустить только что добавленный салон, не трогая остальные. Возвращает адрес кабинета."""
+        cfg = tenants()[slug]
+        runners[slug] = Runner(slug, cfg)
+        started.append(asyncio.create_task(runners[slug].run(log)))
+        write_caddy(tenants())
+        log(f"➕ Добавлен салон «{html.escape(cfg.get('NAME', slug))}» [{slug}]")
+        from dotenv import dotenv_values
+        domain = (dotenv_values(BASE / ".env").get("DOMAIN") or "").strip()
+        return f"https://{slug}.{domain}" if domain else ""
+
+    adminbot.CREATE_SALON = create_tenant
+    adminbot.START_SALON = start_new
     try:
         await asyncio.gather(applog.run(listen=True), adminbot.run(), nightly_backups(log),
                              *(r.run(log) for r in runners.values()))
     finally:
         for r in runners.values():
             r.stop()
+        for t in started:
+            t.cancel()
 
 
 def main():

@@ -16,6 +16,8 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from . import config
@@ -23,6 +25,15 @@ from .config import LOG_OWNER, SHARED_DIR
 
 log = logging.getLogger("adminbot")
 router = Router()
+# Менеджер подставляет сюда функции создания и запуска салона (бот работает внутри менеджера)
+CREATE_SALON = None
+START_SALON = None
+
+
+class AddSalon(StatesGroup):
+    name = State()
+    token = State()
+    max_token = State()
 
 BASE = Path(__file__).resolve().parent.parent
 TENANTS = BASE / "tenants"
@@ -104,10 +115,11 @@ def _btn(text: str, data: str) -> InlineKeyboardButton:
 async def _show_salons(target):
     salons = _salons()
     if not salons:
-        await target.answer("Пока нет ни одного салона на сервере.")
+        await target.answer("Пока нет ни одного салона на сервере.", reply_markup=_kb([[_btn("➕ Добавить салон", "dv:add")]]))
         return
     rows = [[_btn(s["name"], f"dv:s:{s['slug']}")] for s in salons]
-    text = "🛠 <b>Техподдержка</b>\n\nВыберите салон, в который хотите войти:"
+    rows.append([_btn("➕ Добавить салон", "dv:add")])
+    text = "🛠 <b>Техподдержка</b>\n\nВыберите салон, в который хотите войти, или добавьте новый:"
     if isinstance(target, Message):
         await target.answer(text, reply_markup=_kb(rows))
     else:
@@ -228,3 +240,156 @@ async def run():
         await dp.start_polling(bot, handle_signals=False, polling_timeout=config.POLL_TIMEOUT)
     except Exception as e:
         log.warning("Бот техподдержки не запустился (проверьте ADMIN_BOT_TOKEN): %s", e)
+
+
+
+# ======================================================================
+#  ➕ Новый салон прямо из бота: название → тип → токен → MAX → запущен
+# ======================================================================
+NICHE_BTNS = [("💅 Маникюр / ногти", "nails"), ("✂️ Парикмахерская", "hair")]
+
+
+@router.message(Command("add"))
+@router.callback_query(F.data == "dv:add")
+async def add_start(event, state: FSMContext):
+    if not _allowed(event):
+        return
+    msg = event.message if isinstance(event, CallbackQuery) else event
+    if isinstance(event, CallbackQuery):
+        await event.answer()
+    if not CREATE_SALON:
+        await msg.answer("Добавлять салоны можно, когда бот работает внутри сервиса (manager.py).")
+        return
+    await state.clear()
+    await state.set_state(AddSalon.name)
+    await msg.answer("➕ <b>Новый салон — шаг 1 из 4</b>\n\nКак называется салон или мастер? Так его увидят клиенты.\n"
+                     "<i>Например: Ногти у Анны, Barber Room, Студия «Лиса»</i>",
+                     reply_markup=_kb([[_btn("Отмена", "dv:add_cancel")]]))
+
+
+@router.callback_query(F.data == "dv:add_cancel")
+async def add_cancel(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.answer("Отменено")
+    await cb.message.edit_text("Добавление салона отменено.")
+
+
+@router.message(AddSalon.name, F.text)
+async def add_name(message: Message, state: FSMContext):
+    if not _allowed(message):
+        return
+    name = message.text.strip()[:60]
+    if len(name) < 2 or name.startswith("/"):
+        await message.answer("Напишите название салона — хотя бы 2 буквы.")
+        return
+    await state.update_data(name=name)
+    await message.answer(f"«{name}» 👍\n\n<b>Шаг 2 из 4.</b> Чем занимается салон? От этого зависят тексты в боте и стартовый прайс.",
+                         reply_markup=_kb([[_btn(t, f"dv:niche:{k}")] for t, k in NICHE_BTNS] + [[_btn("Отмена", "dv:add_cancel")]]))
+
+
+@router.callback_query(F.data.startswith("dv:niche:"))
+async def add_niche(cb: CallbackQuery, state: FSMContext):
+    if not _allowed(cb) or not (await state.get_data()).get("name"):
+        await cb.answer()
+        return
+    await cb.answer()
+    await state.update_data(niche=cb.data.split(":")[2])
+    await state.set_state(AddSalon.token)
+    await cb.message.edit_text(
+        "<b>Шаг 3 из 4. Бот в Telegram</b>\n\n"
+        "1. Откройте @BotFather → /newbot\n"
+        "2. Имя — название салона, адрес — любой свободный, на конце _bot\n"
+        "3. Скопируйте токен (выглядит так: <code>1234567890:AAH…</code>) и пришлите сюда.\n\n"
+        "🔒 Сообщение с токеном я сразу удалю из чата.",
+        reply_markup=_kb([[_btn("Отмена", "dv:add_cancel")]]))
+
+
+async def _check_tg_token(token: str) -> str:
+    """Проверить токен в Telegram (через мост). Возвращает @имя бота или бросает ошибку."""
+    test = Bot(token, session=config.tg_session())
+    try:
+        me = await test.get_me()
+        return me.username
+    finally:
+        await test.session.close()
+
+
+@router.message(AddSalon.token, F.text)
+async def add_token(message: Message, state: FSMContext):
+    if not _allowed(message):
+        return
+    token = message.text.strip().strip('"')
+    try:
+        await message.delete()  # токен — секрет, в истории чата ему не место
+    except Exception:
+        pass
+    if ":" not in token or len(token) < 30:
+        await message.answer("Это не похоже на токен. Он выглядит так: <code>1234567890:AAH…</code> — пришлите ещё раз.")
+        return
+    try:
+        username = await _check_tg_token(token)
+    except Exception:
+        await message.answer("❌ Telegram не принял этот токен. Скопируйте его из @BotFather ещё раз целиком и пришлите сюда.")
+        return
+    await state.update_data(token=token, username=username)
+    await state.set_state(AddSalon.max_token)
+    await message.answer(f"✅ Бот @{username} подходит.\n\n<b>Шаг 4 из 4. Бот в MAX</b> (по желанию)\n"
+                         "Если у салона есть бот в MAX — пришлите его токен (business.max.ru → Чат-боты → "
+                         "Расширенные настройки). Если нет — нажмите «Пропустить», подключить можно позже.",
+                         reply_markup=_kb([[_btn("Пропустить →", "dv:max_skip")], [_btn("Отмена", "dv:add_cancel")]]))
+
+
+async def _check_max_token(token: str) -> str:
+    import httpx
+    from .maxbot import API, ssl_context
+    async with httpx.AsyncClient(timeout=15, verify=ssl_context()) as c:
+        r = await c.get(f"{API}/me", headers={"Authorization": token})
+        r.raise_for_status()
+        return r.json().get("username") or ""
+
+
+@router.message(AddSalon.max_token, F.text)
+async def add_max(message: Message, state: FSMContext):
+    if not _allowed(message):
+        return
+    token = message.text.strip().strip('"')
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    try:
+        await _check_max_token(token)
+    except Exception:
+        await message.answer("❌ MAX не принял этот токен. Пришлите ещё раз или нажмите «Пропустить».",
+                             reply_markup=_kb([[_btn("Пропустить →", "dv:max_skip")]]))
+        return
+    await finish_add(message, state, token)
+
+
+@router.callback_query(F.data == "dv:max_skip")
+async def add_max_skip(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    if _allowed(cb) and (await state.get_data()).get("token"):
+        await finish_add(cb.message, state, "")
+
+
+async def finish_add(message: Message, state: FSMContext, max_token: str):
+    d = await state.get_data()
+    await state.clear()
+    try:
+        slug = CREATE_SALON(d["name"], d["niche"], d["token"], max_token)
+        cabinet = await START_SALON(slug)
+    except Exception as e:
+        await message.answer(f"❌ Не получилось добавить салон: {e}")
+        return
+    link = f"https://t.me/{d['username']}"
+    await message.answer(
+        f"🎉 <b>Салон «{d['name']}» запущен!</b>\n\n"
+        f"Бот: {link}\n" + (f"Кабинет: {cabinet}\n" if cabinet else "") +
+        f"Папка на сервере: <code>{slug}</code>\n\n"
+        "<b>Что дальше:</b>\n"
+        "1. Отправьте заказчику ссылку на бота и инструкцию для владельца.\n"
+        "2. Заказчик открывает бота и выбирает «работаю на себя» или «салон» — он станет владельцем.\n"
+        "3. Если есть прайс и мастера в файле — <code>manager.py import</code>.\n\n"
+        "Через минуту салон появится в /status 🟢",
+        disable_web_page_preview=True)
