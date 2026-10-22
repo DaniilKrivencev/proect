@@ -344,11 +344,29 @@ def ask_admin_token():
 # ======================================================================
 BACKUPS = BASE / "backups"
 KEEP_BACKUPS = 14
+PHOTO_STORE = BACKUPS / "photos"   # фото отзывов: каждое хранится в копиях ровно один раз
+
+
+def sync_photos() -> int:
+    """Докопировать в backups/photos/<салон>/ только новые фото отзывов. Возвращает, сколько добавлено."""
+    added = 0
+    for slug in tenants():
+        src = TENANTS / slug / "reviews"
+        if not src.exists():
+            continue
+        dst = PHOTO_STORE / slug
+        dst.mkdir(parents=True, exist_ok=True)
+        for f in src.glob("*.jpg"):
+            target = dst / f.name
+            if not target.exists():  # имена случайные и не меняются — достаточно проверить, есть ли файл
+                shutil.copy2(f, target)
+                added += 1
+    return added
 CODE_ITEMS = ["app", "webapp", "tests", "main.py", "manager.py", "requirements.txt", "ИНСТРУКЦИЯ.txt",
               "ПЕРЕЕЗД_НА_ДРУГОЙ_СЕРВЕР.txt", "НОВЫЙ_ЗАКАЗЧИК.txt", ".env.example", ".gitignore", "salons"]
 
 
-def make_backup(quiet: bool = False, out: Path | None = None) -> Path:
+def make_backup(quiet: bool = False, out: Path | None = None, photos: bool = True) -> Path:
     """Один архив = весь сервис: код + базы и настройки ВСЕХ салонов + общие настройки.
     Базы копируются безопасно даже на работающем сервисе (встроенное резервирование SQLite)."""
     import zipfile
@@ -386,8 +404,9 @@ def make_backup(quiet: bool = False, out: Path | None = None) -> Path:
                     dst.close()
                     src.close()
                     z.write(snap, f"tenants/{slug}/lunka.db")
-                for f in (folder / "reviews").glob("*.jpg"):  # фото к отзывам
-                    z.write(f, f"tenants/{slug}/reviews/{f.name}")
+                if photos:  # ручная копия (для переезда) — с фото; ночная — без, фото лежат в backups/photos
+                    for f in (folder / "reviews").glob("*.jpg"):
+                        z.write(f, f"tenants/{slug}/reviews/{f.name}", compress_type=zipfile.ZIP_STORED)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     old = sorted(BACKUPS.glob("backup_*.zip"))
@@ -432,6 +451,13 @@ def restore_backup(path: str):
     for slug in tenants():  # остатки от прошлого места больше не нужны
         for junk in ("lunka.db-wal", "lunka.db-shm", "status.json"):
             (TENANTS / slug / junk).unlink(missing_ok=True)
+        store = PHOTO_STORE / slug  # ночные копии без фото — берём их из хранилища копий
+        if store.exists():
+            dst = TENANTS / slug / "reviews"
+            dst.mkdir(parents=True, exist_ok=True)
+            for f in store.glob("*.jpg"):
+                if not (dst / f.name).exists():
+                    shutil.copy2(f, dst / f.name)
     print("✅ Восстановлено. Теперь запустите сервис (run.bat или python manager.py).")
 
 
@@ -524,8 +550,9 @@ async def nightly_backups(log, hour: int = 4):
         today = time.strftime("%Y-%m-%d", now)
         if now.tm_hour >= hour and done != today and not any(BACKUPS.glob(f"backup_{today}_*.zip")):
             try:
-                path = await asyncio.to_thread(make_backup, True)
-                print(f"Ночная копия: {path.name}", flush=True)
+                added = await asyncio.to_thread(sync_photos)
+                path = await asyncio.to_thread(make_backup, True, None, False)
+                print(f"Ночная копия: {path.name}" + (f", новых фото: {added}" if added else ""), flush=True)
             except Exception as e:
                 log(f"⚠️ Ночная резервная копия не создалась: {html.escape(str(e))}")
             done = today
