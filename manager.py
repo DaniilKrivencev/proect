@@ -87,7 +87,8 @@ def write_caddy(ts: dict[str, dict]):
     domain = domain.removeprefix("https://").removeprefix("http://").strip("/")
     if not domain:
         return
-    blocks = [f"{slug}.{domain} {{\n    reverse_proxy 127.0.0.1:{c.get('PORT')}\n}}\n" for slug, c in ts.items()]
+    blocks = [f"{slug}.{domain} {{\n    encode zstd gzip\n    reverse_proxy 127.0.0.1:{c.get('PORT')}\n}}\n"
+              for slug, c in ts.items()]
     path = BASE / "Caddyfile"
     text = "# Создаётся автоматически при запуске manager.py — руками не править\n\n" + "\n".join(blocks)
     if not path.exists() or path.read_text(encoding="utf-8") != text:

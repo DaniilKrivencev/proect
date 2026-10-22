@@ -211,7 +211,7 @@ async def run(listen: bool):
                 me = await bot.get_me()
                 dp = Dispatcher()
                 dp.include_router(router)
-                tasks.append(dp.start_polling(bot, handle_signals=False))
+                tasks.append(dp.start_polling(bot, handle_signals=False, polling_timeout=config.POLL_TIMEOUT))
                 logging.getLogger("lunka").info("Бот логов: https://t.me/%s%s", me.username,
                                                 "" if chat_id() else f" — откройте его и нажмите «Запустить» (доступ: @{LOG_OWNER})")
             except Exception as e:

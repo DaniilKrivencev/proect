@@ -422,15 +422,24 @@ def list_clients(u=Depends(current_user)):
     mid = u["master_id"] if u["role"] == "master" else None
     bf = "AND b.master_id=?" if mid else ""
     p = (mid,) if mid else ()
+    # Один проход по записям вместо пяти подзапросов на каждого клиента (быстро и при десятках тысяч записей)
     rows = db.q(f"""
-        SELECT c.*,
-          (SELECT COUNT(*) FROM bookings b WHERE b.client_id=c.id AND b.status='active' AND b.start<=? {bf}) AS visits,
-          (SELECT COALESCE(SUM(price),0) FROM bookings b WHERE b.client_id=c.id AND b.status='active' AND b.start<=? {bf}) AS spent,
-          (SELECT MAX(start) FROM bookings b WHERE b.client_id=c.id AND b.status='active' AND b.start<=? {bf}) AS last_visit,
-          (SELECT MIN(start) FROM bookings b WHERE b.client_id=c.id AND b.status='active' AND b.start>? {bf}) AS next_visit,
-          (SELECT m.name FROM bookings b JOIN masters m ON m.id=b.master_id WHERE b.client_id=c.id
-             AND b.status='active' GROUP BY m.id ORDER BY COUNT(*) DESC LIMIT 1) AS fav_master
-        FROM clients c WHERE c.deleted=0 ORDER BY last_visit DESC""", (now, *p, now, *p, now, *p, now, *p))
+        WITH agg AS (
+          SELECT b.client_id,
+                 SUM(CASE WHEN b.start<=? THEN 1 ELSE 0 END) AS visits,
+                 SUM(CASE WHEN b.start<=? THEN b.price ELSE 0 END) AS spent,
+                 MAX(CASE WHEN b.start<=? THEN b.start END) AS last_visit,
+                 MIN(CASE WHEN b.start>? THEN b.start END) AS next_visit
+          FROM bookings b WHERE b.status='active' {bf} GROUP BY b.client_id),
+        fav AS (
+          SELECT client_id, master_id FROM (
+            SELECT client_id, master_id, ROW_NUMBER() OVER (PARTITION BY client_id ORDER BY COUNT(*) DESC) AS rn
+            FROM bookings WHERE status='active' GROUP BY client_id, master_id) WHERE rn=1)
+        SELECT c.*, COALESCE(a.visits,0) AS visits, COALESCE(a.spent,0) AS spent, a.last_visit, a.next_visit,
+               m.name AS fav_master
+        FROM clients c LEFT JOIN agg a ON a.client_id=c.id
+             LEFT JOIN fav f ON f.client_id=c.id LEFT JOIN masters m ON m.id=f.master_id
+        WHERE c.deleted=0 ORDER BY a.last_visit DESC""", (now, now, now, now, *p))
     if mid:
         rows = [r for r in rows if r["visits"] or r["next_visit"]]
     border = (db.now_local() - timedelta(days=SLEEPING_CLIENT_DAYS)).strftime("%Y-%m-%d %H:%M")

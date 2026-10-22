@@ -51,6 +51,9 @@ def tg_session(cls=None):
     if TG_API:
         s.api = TelegramAPIServer.from_base(TG_API)
     return s
+# Как долго бот ждёт новых сообщений в одном запросе к Telegram (максимум 50 с). Ответы при этом мгновенные —
+# Telegram прерывает ожидание, как только кто-то написал. Чем больше — тем меньше запросов через мост.
+POLL_TIMEOUT = 50
 # Кому бот логов разрешает подключиться (username в Telegram без @)
 LOG_OWNER = os.getenv("LOG_OWNER", "daniilkrivencev").strip().lstrip("@").lower()
 

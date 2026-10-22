@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS bookings (
     created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_bookings_master_start ON bookings(master_id, start);
+CREATE INDEX IF NOT EXISTS idx_bookings_client ON bookings(client_id, status, start);
 CREATE TABLE IF NOT EXISTS messages (           -- переписка салона с клиентами
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     client_id  INTEGER NOT NULL,

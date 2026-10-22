@@ -120,7 +120,7 @@ async def main():
 
     applog.events.info("🟢 Запущен. Бот @%s, кабинет: %s", me.username,
                        config.runtime["webapp_url"] or "нет туннеля")
-    tasks = [dp.start_polling(bot, handle_signals=False), server.serve(), reminders.loop(), applog.run(listen=not managed)]
+    tasks = [dp.start_polling(bot, handle_signals=False, polling_timeout=config.POLL_TIMEOUT), server.serve(), reminders.loop(), applog.run(listen=not managed)]
     if config.MAX_BOT_TOKEN:  # тот же сценарий — в MAX
         tasks += await maxbot.start(config.MAX_BOT_TOKEN, bot, dp)
     if config.TUNNEL == "auto" and not config.WEBAPP_URL:

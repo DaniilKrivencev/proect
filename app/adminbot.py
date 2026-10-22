@@ -225,6 +225,6 @@ async def run():
         log.info("Бот техподдержки: https://t.me/%s (доступ: @%s)", me.username, LOG_OWNER)
         dp = Dispatcher()
         dp.include_router(router)
-        await dp.start_polling(bot, handle_signals=False)
+        await dp.start_polling(bot, handle_signals=False, polling_timeout=config.POLL_TIMEOUT)
     except Exception as e:
         log.warning("Бот техподдержки не запустился (проверьте ADMIN_BOT_TOKEN): %s", e)
