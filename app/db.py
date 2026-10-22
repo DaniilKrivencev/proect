@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS reviews (            -- отзывы клиентов
     master_id  INTEGER NOT NULL,
     client_id  INTEGER NOT NULL,
     rating     INTEGER NOT NULL,                -- 1..5
+    author     TEXT DEFAULT '',                 -- имя автора (остаётся, даже если клиента удалят)
     text       TEXT DEFAULT '',
     photo      TEXT DEFAULT '',                 -- имя файла в tenants/<салон>/reviews/
     reply      TEXT DEFAULT '',                 -- ответ мастера / салона
@@ -169,6 +170,8 @@ def init(path=None):
 MIGRATIONS = [
     "ALTER TABLE clients ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE bookings ADD COLUMN review_asked INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE bookings ADD COLUMN review_token TEXT DEFAULT ''",
+    "ALTER TABLE reviews ADD COLUMN author TEXT DEFAULT ''",
 ]
 
 
@@ -428,7 +431,7 @@ def delete_client(client_id: int):
     """Удалить клиента: стираем личные данные и переписку (152-ФЗ — право на удаление).
     Прошлые визиты остаются как «Удалённый клиент», чтобы не ломалась выручка и статистика."""
     delete_chat(client_id)
-    delete_client_reviews(client_id)
+    # отзывы НЕ удаляем: имя автора хранится в самом отзыве, телефон и переписка стираются
     ex("""UPDATE clients SET name='Удалённый клиент', phone='', note='', username='', tg_id=NULL, deleted=1
           WHERE id=?""", (client_id,))
 
@@ -461,8 +464,40 @@ def first_name(name: str) -> str:
     return (name or "Клиент").split()[0]
 
 
-def delete_client_reviews(client_id: int):
-    for r in q("SELECT photo FROM reviews WHERE client_id=?", (client_id,)):
-        if r["photo"]:
-            (REVIEWS_DIR / r["photo"]).unlink(missing_ok=True)
-    ex("DELETE FROM reviews WHERE client_id=?", (client_id,))
+def review_author(r: dict) -> str:
+    return r.get("author") or first_name(r.get("client_name") or "")
+
+
+def add_review(booking: dict, rating: int) -> int:
+    """Создать (или обновить оценку) отзыв о визите. Один отзыв на запись."""
+    old = one("SELECT id FROM reviews WHERE booking_id=?", (booking["id"],))
+    if old:
+        ex("UPDATE reviews SET rating=? WHERE id=?", (rating, old["id"]))
+        return old["id"]
+    return ex("""INSERT INTO reviews (booking_id, master_id, client_id, rating, author, created_at)
+                 VALUES (?,?,?,?,?,?)""",
+              (booking["id"], booking["master_id"], booking["client_id"], rating,
+               first_name(booking.get("client_name") or ""), now_str()))
+
+
+def review_token(booking_id: int) -> str:
+    """Секретная ссылка на отзыв о визите — для клиентов без бота (отправить в WhatsApp / SMS)."""
+    r = one("SELECT review_token FROM bookings WHERE id=?", (booking_id,))
+    if r and r["review_token"]:
+        return r["review_token"]
+    token = secrets.token_urlsafe(12)
+    ex("UPDATE bookings SET review_token=? WHERE id=?", (token, booking_id))
+    return token
+
+
+def booking_by_review_token(token: str) -> dict | None:
+    return one(BOOKING_SQL + " WHERE b.review_token=? AND b.review_token!=''", (token,)) if token else None
+
+
+def reviewable_visits(client_tg: int, days: int = 60) -> list[dict]:
+    """Прошедшие визиты клиента без отзыва — о них можно написать в любой момент."""
+    now = now_local()
+    since = (now - __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+    return q(BOOKING_SQL + """ WHERE c.tg_id=? AND b.status='active' AND b.start>=? AND b.start<?
+             AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.booking_id=b.id AND r.text!='') ORDER BY b.start DESC LIMIT 5""",
+             (client_tg, since, now.strftime("%Y-%m-%d %H:%M")))

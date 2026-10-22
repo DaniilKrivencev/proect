@@ -519,7 +519,7 @@ def list_reviews(master_id: int = 0, u=Depends(current_user)):
     rows = db.q(db.REVIEW_SQL + f" {where} ORDER BY r.id DESC LIMIT 200", params)
     rt = db.master_ratings()
     return {
-        "reviews": [{"id": r["id"], "rating": r["rating"], "text": r["text"], "client": db.first_name(r["client_name"]),
+        "reviews": [{"id": r["id"], "rating": r["rating"], "text": r["text"], "client": db.review_author(r),
                      "master_id": r["master_id"], "master": r["master_name"], "service": r["service_name"] or "",
                      "date": (r["start"] or r["created_at"])[:10], "photo": f"r/{r['photo']}" if r["photo"] else "",
                      "reply": r["reply"], "reply_by": r["reply_by"], "hidden": bool(r["hidden"])} for r in rows],
@@ -552,6 +552,71 @@ def hide_review(review_id: int, u=Depends(admin_only)):
     r = _review_for(u, review_id)
     db.ex("UPDATE reviews SET hidden=? WHERE id=?", (0 if r["hidden"] else 1, review_id))
     return {"hidden": not r["hidden"]}
+
+
+@app.get("/api/bookings/{booking_id}/review_link")
+def review_link(booking_id: int, u=Depends(current_user)):
+    """Ссылка «оцените визит» для клиента без бота — владелец/мастер отправляет её в WhatsApp или SMS."""
+    b = db.get_booking(booking_id)
+    if not b or (u["role"] == "master" and b["master_id"] != u["master_id"]):
+        raise HTTPException(404, "Запись не найдена")
+    if not runtime.get("webapp_url"):
+        raise HTTPException(409, "Кабинет сейчас без постоянного адреса — ссылку сделать нельзя")
+    link = f"{runtime['webapp_url']}/review.html?t={db.review_token(booking_id)}"
+    salon = db.settings()["salon_name"]
+    text = (f"Здравствуйте, {db.first_name(b['client_name'])}! Спасибо, что были в «{salon}» 🌸 "
+            f"Оцените, пожалуйста, визит к мастеру {b['master_name']} — это займёт минуту:")
+    return {"link": link, "text": text}
+
+
+class PublicReviewIn(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    text: str = Field(default="", max_length=1000)
+    photo: str = Field(default="", max_length=12_000_000)  # data:image/jpeg;base64,...
+
+
+def _public_booking(token: str) -> dict:
+    b = db.booking_by_review_token(token)
+    if not b or b["status"] != "active":
+        raise HTTPException(404, "Ссылка не найдена — попросите у салона новую")
+    return b
+
+
+@app.get("/api/public/review/{token}")
+def public_review_get(token: str):
+    b = _public_booking(token)
+    r = db.one("SELECT rating, text FROM reviews WHERE booking_id=?", (b["id"],))
+    return {"salon": db.settings()["salon_name"], "master": b["master_name"], "service": b["service_name"],
+            "start": b["start"], "started": b["start"] <= db.now_str(), "review": r}
+
+
+@app.post("/api/public/review/{token}")
+async def public_review_post(token: str, p: PublicReviewIn):
+    import base64
+    b = _public_booking(token)
+    if b["start"] > db.now_str():
+        raise HTTPException(409, "Оставить отзыв можно после визита")
+    raw = b""
+    if p.photo:  # сначала проверяем фото — чтобы при ошибке ничего не записать наполовину
+        try:
+            raw = base64.b64decode(p.photo.split(",", 1)[-1], validate=True)
+        except Exception:
+            raise HTTPException(400, "Фото не получилось прочитать")
+        if not raw.startswith(b"\xff\xd8"):
+            raise HTTPException(400, "Нужна фотография (JPEG)")
+    first = not db.one("SELECT 1 FROM reviews WHERE booking_id=? AND (text!='' OR photo!='')", (b["id"],))
+    rid = db.add_review(b, p.rating)
+    db.ex("UPDATE reviews SET text=? WHERE id=?", (p.text.strip(), rid))
+    if raw:
+        db.REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+        name = secrets.token_hex(12) + ".jpg"
+        (db.REVIEWS_DIR / name).write_bytes(raw)
+        db.ex("UPDATE reviews SET photo=? WHERE id=?", (name, rid))
+    db.ex("UPDATE bookings SET review_asked=1 WHERE id=?", (b["id"],))
+    if first:
+        from . import reviews
+        await reviews.notify_staff(db.get_review(rid))
+    return {"ok": True}
 
 
 PHOTO_RE = re.compile(r"^[0-9a-f]{24}\.jpg$")

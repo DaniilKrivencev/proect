@@ -157,12 +157,57 @@ async def main():
     assert tc.get("/" + data["reviews"][0]["photo"]).status_code == 404, "фото скрытого отзыва недоступно"
     tc.post(f"/api/reviews/{r['id']}/hide", headers=H)
 
-    # 7. Удаление клиента стирает его отзывы и фото
+    # 7. Клиент без бота (записан вручную): ссылка → страница → отзыв с фото
+    import base64
+    walkin = db.get_or_create_client(None, "Елена Смирнова", "+79005556677")
+    wb = db.create_booking(m["id"], walkin["id"], svc, start)
+    link = tc.get(f"/api/bookings/{wb}/review_link", headers=H).json()
+    assert link["link"].startswith("https://zarina.example.ru/review.html?t=") and "Елена" in link["text"]
+    token = link["link"].split("t=")[1]
+    info = tc.get(f"/api/public/review/{token}").json()
+    assert info["master"] == "Аня" and info["started"] is True and info["review"] is None
+    assert tc.get("/api/public/review/nope").status_code == 404
+    assert tc.post(f"/api/public/review/{token}", json={"rating": 4, "text": "x", "photo": "data:image/png;base64,iVBORw0KGgo="}).status_code == 400
+    session.sent.clear()
+    ok = tc.post(f"/api/public/review/{token}", json={"rating": 4, "text": "Очень уютно",
+                                                       "photo": "data:image/jpeg;base64," + base64.b64encode(JPEG).decode()})
+    assert ok.status_code == 200, ok.text
+    wr = db.one("SELECT * FROM reviews WHERE booking_id=?", (wb,))
+    assert wr["rating"] == 4 and wr["author"] == "Елена" and (db.REVIEWS_DIR / wr["photo"]).read_bytes() == JPEG
+    assert [s_ for s_ in session.sent if "Новый отзыв" in s_[2]], "мастер узнал об отзыве по ссылке"
+    # будущий визит — по ссылке ещё нельзя
+    fb = db.create_booking(m["id"], walkin["id"], svc, (now + timedelta(days=2)).strftime("%Y-%m-%d %H:%M"))
+    ft = tc.get(f"/api/bookings/{fb}/review_link", headers=H).json()["link"].split("t=")[1]
+    assert tc.post(f"/api/public/review/{ft}", json={"rating": 5}).status_code == 409
+    # мастер не может взять ссылку на чужую запись
+    api_parse = api.safe_parse_webapp_init_data
+    from types import SimpleNamespace
+    api.safe_parse_webapp_init_data = lambda token, init_data: SimpleNamespace(user=SimpleNamespace(id=555, first_name="Оля", last_name=None))
+    assert tc.get(f"/api/bookings/{wb}/review_link", headers={"X-Init-Data": "x"}).status_code == 404
+    api.safe_parse_webapp_init_data = api_parse
+
+    # 8. Клиент с ботом сам пишет отзыв о визите, о котором его ещё не спрашивали
+    later = db.create_booking(m["id"], c["id"], svc, (y - timedelta(days=1)).strftime("%Y-%m-%d %H:%M"))
+    assert [v["id"] for v in db.reviewable_visits(CLIENT)] == [later]
+    session.sent.clear()
+    await dp.feed_update(bot, msg(CLIENT, bot_module.B_REVIEWS))
+    assert any("Оставить отзыв" in str(s_[3]) for s_ in session.sent)
+    await dp.feed_update(bot, cb(CLIENT, "rv_write"))
+    await dp.feed_update(bot, cb(CLIENT, reviews.Rate(b=later, r=3).pack()))
+    await dp.feed_update(bot, msg(CLIENT, "Неплохо"))
+    await dp.feed_update(bot, cb(CLIENT, "rv_done"))
+    assert db.one("SELECT rating, text FROM reviews WHERE booking_id=?", (later,)) == {"rating": 3, "text": "Неплохо"}
+
+    # 9. Удаление клиента: телефон и переписка стираются, ОТЗЫВЫ ОСТАЮТСЯ (с именем и фото)
+    n_before = db.one("SELECT COUNT(*) n FROM reviews WHERE client_id=?", (c["id"],))["n"]
     photo_file = db.REVIEWS_DIR / r["photo"]
     db.cancel_booking(future, "salon")
     db.delete_client(c["id"])
-    assert not db.q("SELECT 1 FROM reviews") and not photo_file.exists()
-    print("✅ Отзывы: просьба, звёзды, текст, фото, ответ мастера, рейтинг, кабинет, удаление — всё работает")
+    kept = db.q(db.REVIEW_SQL + " WHERE r.client_id=?", (c["id"],))
+    assert len(kept) == n_before and photo_file.exists()
+    assert all(db.review_author(x) == "Анна" for x in kept), [db.review_author(x) for x in kept]
+    assert db.one("SELECT phone FROM clients WHERE id=?", (c["id"],))["phone"] == ""
+    print("✅ Отзывы: бот, ссылка для клиентов без бота, фото, ответ мастера, рейтинг, кабинет — всё работает; при удалении клиента отзывы остаются")
 
 
 asyncio.run(main())

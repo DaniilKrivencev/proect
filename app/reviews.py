@@ -82,7 +82,7 @@ async def send_requests():
         if not b["client_tg"]:
             continue  # записан вручную, без бота — написать некуда
         rows = [[btn(f"{'⭐' * r} {RATING_WORDS[r]}", Rate(b=b["id"], r=r))] for r in (5, 4, 3, 2, 1)]
-        rows.append([btn("Не сейчас", Rate(b=b["id"], r=0))])
+        rows.append([btn("Не сейчас", Rate(b=b["id"], r=0))])  # позже — «⭐ Отзывы» → «Оставить отзыв»
         await notify.send(b["client_tg"],
                           f"Спасибо, что были у нас! 🌸\n\nКак вам визит к мастеру <b>{html.escape(b['master_name'])}</b> "
                           f"({html.escape(b['service_name'])})?\nОцените, пожалуйста, — это займёт 10 секунд и очень "
@@ -100,16 +100,10 @@ async def rate(cb: CallbackQuery, callback_data: Rate, state: FSMContext):
         return
     if not callback_data.r:
         await cb.answer()
-        await safe_edit(cb.message, "Хорошо 🙂 Если захотите оставить отзыв позже — просто напишите его сюда.")
+        await safe_edit(cb.message, "Хорошо 🙂 Оставить отзыв можно в любой момент: кнопка «⭐ Отзывы» → «Оставить отзыв».")
         return
     r = callback_data.r
-    old = db.one("SELECT id FROM reviews WHERE booking_id=?", (b["id"],))
-    if old:
-        db.ex("UPDATE reviews SET rating=? WHERE id=?", (r, old["id"]))
-        rid = old["id"]
-    else:
-        rid = db.ex("INSERT INTO reviews (booking_id, master_id, client_id, rating, created_at) VALUES (?,?,?,?,?)",
-                    (b["id"], b["master_id"], b["client_id"], r, db.now_str()))
+    rid = db.add_review(b, r)
     await cb.answer("Спасибо!")
     await state.set_state(ReviewStates.text)
     await state.update_data(review_id=rid)
@@ -206,7 +200,7 @@ async def notify_staff(r: dict):
     chats = [m["tg_id"]] if m and m["tg_id"] else []
     chats += [a["tg_id"] for a in db.admins() if a["tg_id"] not in chats]
     text = (f"⭐ <b>Новый отзыв</b> о мастере {html.escape(r['master_name'])}\n"
-            f"{stars_line(r['rating'])}  {db.first_name(r['client_name'])}"
+            f"{stars_line(r['rating'])}  {html.escape(db.review_author(r))}"
             + (f" · {html.escape(r['service_name'])}" if r.get("service_name") else "")
             + (f"\n\n«{html.escape(r['text'])}»" if r["text"] else "")
             + (f"\n\n📸 Фото: {photo_url(r['photo'])}" if r["photo"] and photo_url(r["photo"]) else ""))
@@ -277,7 +271,7 @@ def masters_with_reviews() -> list[dict]:
     return [dict(m, avg=rt[m["id"]][0], n=rt[m["id"]][1]) for m in db.masters() if m["id"] in rt]
 
 
-async def show_masters(message: Message, edit: bool):
+async def show_masters(message: Message, edit: bool, uid: int | None = None):
     ms = masters_with_reviews()
     if not ms:
         text = "Отзывов пока нет 🙂 Запишитесь — и станьте первым, кто его оставит!"
@@ -285,18 +279,50 @@ async def show_masters(message: Message, edit: bool):
     else:
         text = "⭐ <b>Отзывы о мастерах</b>\nНажмите на мастера, чтобы почитать отзывы 👇"
         rows = [[btn(f"{m['name']} · {db.stars(m['avg'], m['n'])}", ShowRev(m=m["id"]))] for m in ms]
+    if uid and db.reviewable_visits(uid):
+        rows.insert(0, [btn("✍️ Оставить отзыв о визите", "rv_write")])
     await (safe_edit(message, text, kb(rows)) if edit else message.answer(text, reply_markup=kb(rows)))
 
 
 @router.message(F.text == B_REVIEWS)
 async def menu_reviews(message: Message, state: FSMContext):
     await state.clear()
-    await show_masters(message, edit=False)
+    await show_masters(message, edit=False, uid=message.from_user.id)
+
+
+@router.callback_query(F.data == "rv_write")
+async def write_review(cb: CallbackQuery):
+    """Клиент сам решил оставить отзыв — выбираем, о каком визите."""
+    visits = db.reviewable_visits(cb.from_user.id)
+    await cb.answer()
+    if not visits:
+        await safe_edit(cb.message, "Недавних визитов без отзыва нет 🙂")
+        return
+    if len(visits) == 1:
+        await ask_stars(cb.message, visits[0], edit=True)
+        return
+    rows = [[btn(f"{start_human(b['start'])} · {b['master_name']}", f"rv_pick:{b['id']}")] for b in visits]
+    await safe_edit(cb.message, "О каком визите хотите оставить отзыв? 👇", kb(rows))
+
+
+@router.callback_query(F.data.startswith("rv_pick:"))
+async def pick_visit(cb: CallbackQuery):
+    b = db.get_booking(int(cb.data.split(":")[1]))
+    await cb.answer()
+    if b and b["client_tg"] == cb.from_user.id:
+        await ask_stars(cb.message, b, edit=True)
+
+
+async def ask_stars(message: Message, b: dict, edit: bool):
+    rows = [[btn(f"{'⭐' * r} {RATING_WORDS[r]}", Rate(b=b["id"], r=r))] for r in (5, 4, 3, 2, 1)]
+    text = (f"Как вам визит к мастеру <b>{html.escape(b['master_name'])}</b>?\n"
+            f"{html.escape(b['service_name'])} · {start_human(b['start'])}")
+    await (safe_edit(message, text, kb(rows)) if edit else message.answer(text, reply_markup=kb(rows)))
 
 
 def review_block(r: dict) -> str:
     when = start_human(r["start"]).split(" в ")[0] if r.get("start") else r["created_at"][:10]
-    out = f"{stars_line(r['rating'])}  <b>{html.escape(db.first_name(r['client_name']))}</b> · {when}"
+    out = f"{stars_line(r['rating'])}  <b>{html.escape(db.review_author(r))}</b> · {when}"
     if r.get("service_name"):
         out += f"\n<i>{html.escape(r['service_name'])}</i>"
     if r["text"]:
@@ -312,7 +338,7 @@ def review_block(r: dict) -> str:
 async def show_reviews(cb: CallbackQuery, callback_data: ShowRev):
     await cb.answer()
     if not callback_data.m:
-        await show_masters(cb.message, edit=True)
+        await show_masters(cb.message, edit=True, uid=cb.from_user.id)
         return
     m = db.get_master(callback_data.m)
     rows = db.q(db.REVIEW_SQL + " WHERE r.master_id=? AND r.hidden=0 ORDER BY r.id DESC LIMIT ? OFFSET ?",

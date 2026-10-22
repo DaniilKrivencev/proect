@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Отзыв о визите</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Manrope:wght@400;500;600;700&display=swap">
+  <style>
+    :root { --bg:#FBF9F7; --card:#FFFFFF; --ink:#2B2523; --muted:#8A7D77; --line:#EEE6E1; --sand:#F4EEEA; --accent:#B76E63; --gold:#C9963E; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#1B1817; --card:#242120; --ink:#F3EDE9; --muted:#A79C96; --line:#34302E; --sand:#2A2623; --accent:#D08D82; }
+    }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { background:var(--bg); color:var(--ink); font-family:Manrope,system-ui,sans-serif; min-height:100vh; display:flex; justify-content:center; padding:24px 16px 40px; }
+    main { width:100%; max-width:440px; display:flex; flex-direction:column; gap:16px; }
+    .salon { font-family:"Cormorant Garamond",serif; font-size:32px; font-weight:600; line-height:1.1; }
+    .muted { color:var(--muted); font-size:15px; line-height:1.45; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:22px; padding:20px; display:flex; flex-direction:column; gap:14px; }
+    h2 { font-size:18px; }
+    .stars { display:flex; gap:6px; justify-content:center; }
+    .stars button { background:none; border:none; font-size:42px; line-height:1; color:var(--line); cursor:pointer; padding:2px; transition:transform .1s; }
+    .stars button.on { color:var(--gold); }
+    .stars button:active { transform:scale(.9); }
+    .word { text-align:center; min-height:20px; font-weight:600; color:var(--accent); }
+    textarea { width:100%; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:14px; padding:12px 14px; font:inherit; font-size:16px; resize:vertical; min-height:100px; }
+    .photo { display:flex; align-items:center; gap:12px; border:1.5px dashed var(--line); border-radius:14px; padding:14px; cursor:pointer; color:var(--muted); }
+    .photo img { width:64px; height:64px; object-fit:cover; border-radius:10px; }
+    .photo input { display:none; }
+    button.primary { background:var(--ink); color:var(--bg); border:none; border-radius:16px; padding:16px; font:inherit; font-size:17px; font-weight:700; cursor:pointer; }
+    button.primary:disabled { opacity:.45; }
+    .done { text-align:center; padding:30px 20px; }
+    .done .big { font-size:48px; }
+    .err { color:#B4483A; font-size:14px; }
+    [hidden] { display:none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <div>
+    <div class="salon" id="salon">&nbsp;</div>
+    <div class="muted" id="visit"></div>
+  </div>
+
+  <div class="card" id="form" hidden>
+    <h2>Как вам визит?</h2>
+    <div class="stars" id="stars"></div>
+    <div class="word" id="word"></div>
+    <label class="muted" for="text">Пара слов: что понравилось, что сделать лучше</label>
+    <textarea id="text" maxlength="1000" placeholder="Например: всё аккуратно, мастер внимательная, держится третью неделю!"></textarea>
+    <label class="photo" id="photoBox">
+      <input type="file" id="file" accept="image/*">
+      <img id="preview" alt="" hidden>
+      <span id="photoText">📸 Добавить фото результата (по желанию)</span>
+    </label>
+    <div class="err" id="err" hidden></div>
+    <button class="primary" id="send" disabled>Отправить отзыв</button>
+    <div class="muted" style="font-size:13px">В отзыве будет видно только ваше имя. Телефон никто не увидит.</div>
+  </div>
+
+  <div class="card done" id="done" hidden>
+    <div class="big">💛</div>
+    <h2>Спасибо за отзыв!</h2>
+    <div class="muted">Он уже опубликован. Мастеру очень приятно 🙏</div>
+  </div>
+
+  <div class="card done" id="fail" hidden>
+    <div class="big">🙁</div>
+    <div class="muted" id="failText">Ссылка не найдена — попросите у салона новую.</div>
+  </div>
+</main>
+<script>
+const WORDS = { 5: "Отлично", 4: "Хорошо", 3: "Нормально", 2: "Плохо", 1: "Ужасно" };
+const $ = (id) => document.getElementById(id);
+const token = new URLSearchParams(location.search).get("t") || "";
+let rating = 0, photo = "";
+
+function show(id) { ["form", "done", "fail"].forEach((x) => ($(x).hidden = x !== id)); }
+function setRating(r) {
+  rating = r;
+  [...$("stars").children].forEach((b, i) => b.classList.toggle("on", i < r));
+  $("word").textContent = WORDS[r] || "";
+  $("send").disabled = !r;
+}
+$("stars").innerHTML = [1, 2, 3, 4, 5].map((i) => `<button type="button" aria-label="${i} из 5">★</button>`).join("");
+[...$("stars").children].forEach((b, i) => (b.onclick = () => setRating(i + 1)));
+
+// Фото: уменьшаем до 1600 px и сжимаем в JPEG прямо в телефоне — быстро грузится даже по 3G
+$("file").onchange = () => {
+  const f = $("file").files[0];
+  if (!f) return;
+  const img = new Image();
+  img.onload = () => {
+    const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    photo = c.toDataURL("image/jpeg", 0.85);
+    $("preview").src = photo; $("preview").hidden = false;
+    $("photoText").textContent = "Фото добавлено — нажмите, чтобы заменить";
+    URL.revokeObjectURL(img.src);
+  };
+  img.onerror = () => { $("err").textContent = "Это фото не открывается — попробуйте другое"; $("err").hidden = false; };
+  img.src = URL.createObjectURL(f);
+};
+
+$("send").onclick = async () => {
+  $("send").disabled = true; $("err").hidden = true;
+  try {
+    const res = await fetch(`api/public/review/${encodeURIComponent(token)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating, text: $("text").value.trim(), photo }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || "Не получилось отправить, попробуйте ещё раз");
+    show("done");
+  } catch (e) {
+    $("err").textContent = e.message; $("err").hidden = false; $("send").disabled = false;
+  }
+};
+
+(async () => {
+  try {
+    const res = await fetch(`api/public/review/${encodeURIComponent(token)}`);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail);
+    $("salon").textContent = d.salon;
+    const [day, time] = d.start.split(" ");
+    $("visit").textContent = `${d.service} · мастер ${d.master} · ${day.slice(8, 10)}.${day.slice(5, 7)} в ${time}`;
+    document.title = `Отзыв — ${d.salon}`;
+    if (!d.started) { $("failText").textContent = "Оставить отзыв можно будет после визита 🙂"; show("fail"); return; }
+    if (d.review) { setRating(d.review.rating); $("text").value = d.review.text || ""; }
+    show("form");
+  } catch (e) {
+    if (e.message) $("failText").textContent = e.message;
+    show("fail");
+  }
+})();
+</script>
+</body>
+</html>

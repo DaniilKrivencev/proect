@@ -62,6 +62,7 @@ const money = (v) => Number(v || 0).toLocaleString("ru-RU") + " ₽";
 const dur = (m) => (m >= 60 ? `${Math.floor(m / 60)} ч${m % 60 ? " " + (m % 60) + " мин" : ""}` : `${m} мин`);
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const wdMon = (d) => (d.getDay() + 6) % 7;
+const nowStr = () => { const d = new Date(); return `${iso(d)} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 const human = (d) => `${WD[wdMon(d)]}, ${d.getDate()} ${MONTHS[d.getMonth()]}`;
 const fromIso = (s) => { const [y, m, d] = s.slice(0, 10).split("-").map(Number); return new Date(y, m - 1, d); };
 const plural = (n, a, b, c) => (n % 10 === 1 && n % 100 !== 11 ? a : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? b : c);
@@ -240,8 +241,13 @@ async function loadDay() {
         ${b.client_phone ? `<div class="sub"><a href="tel:${esc(b.client_phone)}">${esc(b.client_phone)}</a></div>` : ""}
         ${b.client_note ? `<div class="sub">${esc(b.client_note)}</div>` : ""}
         ${isAdmin() && !state.master ? `<div class="master-line">${avatar(m)}${esc(m.name)}</div>` : ""}
+        ${b.status === "active" && b.start <= nowStr() ? `<button class="ghost small rv-ask" data-rv="${b.id}">⭐ Попросить отзыв</button>` : ""}
       </div></div>`;
   }).join("") + (active.length ? `<div class="total">${active.length} ${plural(active.length, "запись", "записи", "записей")} · <b>${money(active.reduce((s, b) => s + b.price, 0))}</b></div>` : "");
+  $("bookingList").querySelectorAll("[data-rv]").forEach((btn) => (btn.onclick = async () => {
+    try { const r = await api(`api/bookings/${btn.dataset.rv}/review_link`); shareText(r.text, r.link); }
+    catch (e) { fail(e); }
+  }));
   $("bookingList").querySelectorAll("[data-cancel]").forEach((btn) => (btn.onclick = async () => {
     if (!(await confirmBox("Отменить запись? Клиент получит уведомление в Telegram."))) return;
     try { await api(`api/bookings/${btn.dataset.cancel}/cancel`, { method: "POST" }); toast("Запись отменена"); loadDay(); loadMe(); }

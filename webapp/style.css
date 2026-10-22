@@ -232,3 +232,4 @@ button.small { padding: 7px 13px; font-size: 13px; }
 .rv-reply{background:var(--sand);border-radius:12px;padding:10px 12px;font-size:14px;line-height:1.45}
 .rv-hidden{opacity:.55}
 .rv .row{margin-top:4px}
+.rv-ask{margin-top:8px}
