@@ -1,5 +1,7 @@
 """Настройки приложения. Все значения берутся из файла .env рядом с run.bat."""
+import logging
 import os
+import re
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -64,3 +66,25 @@ DIGEST_HOUR = 20           # во сколько мастеру приходит
 
 # Значения, которые меняются во время работы (адрес туннеля, имя бота)
 runtime = {"webapp_url": WEBAPP_URL, "bot_username": ""}
+
+
+# ---------- Короткие сообщения о сбоях моста ----------
+# Когда Cloudflare/Telegram на секунду отвечает ошибкой (520, 502…), aiogram печатает в окно
+# всю HTML-страницу ошибки (сотни строк). Оставляем одну понятную строку — бот сам переподключается.
+class _ShortHtmlErrors(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        if "<!DOCTYPE" in msg or "<html" in msg:
+            code = re.search(r"Error code (\d{3})|\b(5\d\d):", msg)
+            num = next((g for g in (code.groups() if code else ()) if g), "")
+            record.msg = ("Failed to fetch updates: Telegram-мост на секунду ответил ошибкой" + (f" {num}" if num else "") +
+                          " — бот переподключится сам, ничего делать не нужно")
+            record.args = ()
+            record.levelno, record.levelname = logging.WARNING, "WARNING"
+        return True
+
+
+logging.getLogger("aiogram.dispatcher").addFilter(_ShortHtmlErrors())
