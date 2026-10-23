@@ -20,7 +20,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton,
                            MenuButtonWebApp, Message, ReplyKeyboardMarkup, WebAppInfo)
 
-from . import db, notify, slots
+from . import config, db, notify, slots
 from .config import runtime
 from .notify import CCancel, MCancel, Reply
 from .niche import N
@@ -169,6 +169,14 @@ async def refresh_staff_buttons(bot: Bot):
             await set_menu_button(bot, m["tg_id"])
 
 
+support_url = config.support_url
+
+
+def support_row(role: str) -> list:
+    url = support_url(role)
+    return [[InlineKeyboardButton(text="🆘 Поддержка", url=url)]] if url else []
+
+
 NO_CABINET = "\n\n<i>Кабинет сейчас недоступен: не запущен туннель. Запись клиентов при этом работает.</i>"
 
 
@@ -182,7 +190,7 @@ async def show_admin_home(message: Message, tg_id: int):
             f"{'' if runtime['webapp_url'] else NO_CABINET}",
             reply_markup=kb(cabinet_button() + [[btn("📅 Записи на сегодня и завтра", "today")],
                                                 [btn("🔗 Ссылка для клиентов", "link")],
-                                                [btn("❓ Как это работает", "help_staff")]]))
+                                                [btn("❓ Как это работает", "help_staff")]] + support_row("owner")))
         return
     warn = "" if db.masters() else ("\n\n⚠️ <b>Первый шаг:</b> откройте кабинет → «Мастера» и добавьте мастеров. "
                                     "Пока мастеров нет, клиенты не смогут записаться.")
@@ -190,7 +198,7 @@ async def show_admin_home(message: Message, tg_id: int):
         f"🌸 Кабинет салона «{s['salon_name']}».{warn}{'' if runtime['webapp_url'] else NO_CABINET}",
         reply_markup=kb(cabinet_button() + [[btn("📅 Записи на сегодня и завтра", "today")],
                                             [btn("🔗 Ссылка для клиентов", "link")],
-                                            [btn("❓ Как это работает", "help_staff")]]))
+                                            [btn("❓ Как это работает", "help_staff")]] + support_row("owner")))
 
 
 async def show_master_home(message: Message, master: dict):
@@ -199,7 +207,7 @@ async def show_master_home(message: Message, master: dict):
         f"🌸 {master['name']}, это ваш рабочий кабинет в «{salon()['salon_name']}».\n\n"
         f"Сюда будут приходить ваши новые записи и отмены, а вечером — план на завтра."
         f"{'' if runtime['webapp_url'] else NO_CABINET}",
-        reply_markup=kb(cabinet_button() + [[btn("📅 Мои записи на сегодня и завтра", "today")]]))
+        reply_markup=kb(cabinet_button() + [[btn("📅 Мои записи на сегодня и завтра", "today")]] + support_row("master")))
 
 
 DEV_MODE_NAMES = {"client": "👤 Клиент", "owner": "👑 Хозяин"}
@@ -532,8 +540,9 @@ async def menu_help(message: Message, state: FSMContext):
         "Готово! Я пришлю напоминание за день и за 2 часа до визита. 💌\n\n"
         f"Передумали или хотите другое время? Нажмите <b>{B_MY}</b> — там можно перенести или отменить.\n\n"
         "Ошиблись кнопкой? Нажмите «← Назад» или «🏠 В начало». Ничего не сломается 🙂\n\n"
-        "Остались вопросы — просто напишите их сюда сообщением, я передам администратору.",
-        reply_markup=MENU)
+        "Остались вопросы — просто напишите их сюда сообщением, я передам администратору."
+        + ("\n\nЧто-то не работает в самом боте? Нажмите «🆘 Поддержка»." if support_url("client") else ""),
+        reply_markup=kb(support_row("client")) if support_url("client") else MENU)
 
 
 @router.message(F.text == B_STOP)

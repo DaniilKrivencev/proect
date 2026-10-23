@@ -168,6 +168,10 @@ async function loadMe() {
   $("salonName").textContent = me.salon.salon_name;
   document.title = me.salon.salon_name + " — кабинет";
   $("pAbout").placeholder = PH().about;
+  document.querySelectorAll(".help-btn").forEach((b) => {
+    b.hidden = !me.help_url;
+    b.onclick = () => (tg ? tg.openTelegramLink(me.help_url) : window.open(me.help_url));
+  });
   $("whoAmI").textContent = isSolo() ? "Мой кабинет" : isAdmin() ? "Кабинет владельца" : `Мастер ${me.name}`;
   const n = me.next;
   if (n) {

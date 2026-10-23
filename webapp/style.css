@@ -240,3 +240,4 @@ button.small { padding: 7px 13px; font-size: 13px; }
 .rv-photo-pick img{width:56px;height:56px;object-fit:cover;border-radius:10px}
 #importReview{margin-bottom:12px}
 .rv .tag{align-self:flex-start}
+.help-btn{margin-top:12px}

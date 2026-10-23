@@ -393,6 +393,20 @@ def ask_admin_token():
     os.environ["ADMIN_BOT_TOKEN"] = token
 
 
+def ask_support_token():
+    env_path = BASE / ".env"
+    text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+    if any(l.startswith("SUPPORT_BOT_TOKEN=") for l in text.splitlines()):
+        return
+    print("\nНеобязательно: токен бота поддержки (кнопка «🆘 Поддержка» у владельцев, мастеров и клиентов).")
+    print("Обращения будут приходить вам. Создайте бота у @BotFather.")
+    token = ask("Вставьте токен и Enter, или просто Enter, чтобы пропустить: ").strip('"')
+    if token and ":" not in token:
+        token = ""
+    env_path.write_text(text.rstrip("\n") + f"\nSUPPORT_BOT_TOKEN={token}\n", encoding="utf-8")
+    os.environ["SUPPORT_BOT_TOKEN"] = token
+
+
 # ======================================================================
 #  Надзор за процессами салонов
 # ======================================================================
@@ -701,7 +715,7 @@ def status_text(runners: dict[str, Runner]) -> str:
 async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
     os.environ.pop("LUNKA_TENANT_DIR", None)
     os.environ.pop("LUNKA_TENANT", None)
-    from app import adminbot, applog  # импорт после настройки окружения: менеджер — не салон
+    from app import adminbot, applog, supportbot  # импорт после настройки окружения: менеджер — не салон
 
     runners = {slug: Runner(slug, cfg) for slug, cfg in ts.items() if cfg.get("DISABLED") != "1"}
     if runners_out is not None:
@@ -762,7 +776,7 @@ async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
     adminbot.REMOVE_SALON = remove
     adminbot.BACKUP = lambda: make_backup(quiet=True)
     try:
-        await asyncio.gather(applog.run(listen=True), adminbot.run(), nightly_backups(log),
+        await asyncio.gather(applog.run(listen=True), adminbot.run(), supportbot.run(), nightly_backups(log),
                              *(r.run(log) for r in runners.values()))
     finally:
         for r in runners.values():
@@ -816,6 +830,7 @@ def main():
         add_tenant_interactive()
     ask_log_token()
     ask_admin_token()
+    ask_support_token()
     ts = tenants()
     errs = problems(ts)
     if errs:

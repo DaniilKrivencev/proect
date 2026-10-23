@@ -37,6 +37,8 @@ LOG_BOT_TOKEN = os.getenv("LOG_BOT_TOKEN", "").strip()
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN", "").strip()
 # Бот техподдержки (один на сервер): вход в любой салон как клиент/хозяин/мастер. Доступ — у LOG_OWNER.
 ADMIN_BOT_TOKEN = os.getenv("ADMIN_BOT_TOKEN", "").strip()
+# Бот поддержки (один на сервер): кнопка «🆘 Поддержка» у владельцев, мастеров и клиентов всех салонов.
+SUPPORT_BOT_TOKEN = os.getenv("SUPPORT_BOT_TOKEN", "").strip()
 # Прокси для Telegram (на российских серверах Telegram заблокирован). Пусто — напрямую.
 # Пример: socks5://127.0.0.1:1080 — SSH-мост до зарубежного сервера (см. МОСТ_ДЛЯ_TELEGRAM.txt)
 TG_PROXY = os.getenv("TG_PROXY", "").strip() or None
@@ -88,3 +90,22 @@ class _ShortHtmlErrors(logging.Filter):
 
 
 logging.getLogger("aiogram.dispatcher").addFilter(_ShortHtmlErrors())
+
+
+# ---------- Кнопка «🆘 Поддержка» ----------
+_support = {"mtime": None, "user": ""}
+
+
+def support_url(role: str) -> str:
+    """Ссылка на общий бот поддержки: t.me/<бот>?start=<салон>-<роль>. Адрес бота менеджер пишет в shared/support.json."""
+    f = SHARED_DIR / "support.json"
+    try:
+        mt = f.stat().st_mtime
+        if mt != _support["mtime"]:
+            import json
+            _support.update(mtime=mt, user=json.loads(f.read_text(encoding="utf-8")).get("username") or "")
+    except Exception:
+        _support.update(mtime=None, user="")
+    if not _support["user"]:
+        return ""
+    return f"https://t.me/{_support['user']}?start={TENANT or 'salon'}-{role}"

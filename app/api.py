@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, notify, slots
+from . import config, db, notify, slots
 from .config import BASE_DIR, BOT_TOKEN, DEV_USER_ID, SLEEPING_CLIENT_DAYS, runtime
 
 log = logging.getLogger("api")
@@ -140,6 +140,7 @@ def me(u=Depends(current_user)):
             "link_max": f"https://max.ru/{runtime['max_username']}" if runtime.get("max_username") else "", "today": now.date().isoformat(),
             "unread_chats": unread if u["role"] == "admin" else 0,
             "support_access": bool(db.dev_id()) if u["role"] == "admin" else False,
+            "help_url": config.support_url("owner" if u["role"] == "admin" else "master"),
             "stats": {"month_revenue": stats["revenue"], "month_visits": stats["visits"],
                       "upcoming": upcoming["n"], "clients": clients["n"], "masters": len(db.masters())}}
 
