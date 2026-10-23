@@ -39,6 +39,8 @@ MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN", "").strip()
 ADMIN_BOT_TOKEN = os.getenv("ADMIN_BOT_TOKEN", "").strip()
 # Бот поддержки (один на сервер): кнопка «🆘 Поддержка» у владельцев, мастеров и клиентов всех салонов.
 SUPPORT_BOT_TOKEN = os.getenv("SUPPORT_BOT_TOKEN", "").strip()
+# Демо-салон: любой может попробовать себя клиентом, владельцем или мастером; данные сбрасываются каждую ночь.
+DEMO = os.getenv("DEMO", "") == "1"
 # Прокси для Telegram (на российских серверах Telegram заблокирован). Пусто — напрямую.
 # Пример: socks5://127.0.0.1:1080 — SSH-мост до зарубежного сервера (см. МОСТ_ДЛЯ_TELEGRAM.txt)
 TG_PROXY = os.getenv("TG_PROXY", "").strip() or None

@@ -173,6 +173,9 @@ support_url = config.support_url
 
 
 def support_row(role: str) -> list:
+    if config.DEMO:
+        from .demo import contact_row
+        return contact_row()
     url = support_url(role)
     return [[InlineKeyboardButton(text="🆘 Поддержка", url=url)]] if url else []
 
@@ -241,6 +244,9 @@ async def start_deep(message: Message, command: CommandObject, state: FSMContext
     if command.args == "dev" and message.from_user.id == db.dev_id():
         await dev_enter(message, state)
         return
+    if config.DEMO:  # в демо приглашения владельца/мастера/администратора не действуют
+        await start_plain(message, state)
+        return
     o = re.fullmatch(r"owner_([0-9a-f]+)", command.args or "")
     if o:
         st = db.settings()
@@ -287,6 +293,10 @@ async def start_deep(message: Message, command: CommandObject, state: FSMContext
 async def start_plain(message: Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
+    if config.DEMO and not db.dev_mode(uid) and not db.demo_role(uid):
+        from .demo import show_picker
+        await show_picker(message)
+        return
     if db.is_admin(uid):
         await show_admin_home(message, uid)
         return
@@ -297,7 +307,7 @@ async def start_plain(message: Message, state: FSMContext):
     if master:
         await show_master_home(message, master)
         return
-    if not db.admins() and not db.dev_mode(uid) and not owner_reserved():  # техподдержку подключать салон не просим
+    if not config.DEMO and not db.admins() and not db.dev_mode(uid) and not owner_reserved():  # техподдержку подключать салон не просим
         await message.answer(
             f"Здравствуйте! 👋 Это ваша онлайн-запись в Telegram и MAX.\n\n"
             "📲 Клиенты записываются сами — круглосуточно\n"
@@ -314,6 +324,9 @@ async def start_plain(message: Message, state: FSMContext):
 @router.callback_query(F.data.in_({"reg", "reg:solo", "reg:salon"}))
 async def register(cb: CallbackQuery):
     uid = cb.from_user.id
+    if config.DEMO:
+        await cb.answer("Это демо-салон 🙂", show_alert=True)
+        return
     if db.dev_mode(uid):
         await cb.answer("В режиме техподдержки салон не подключают — это делает владелец", show_alert=True)
         return
@@ -940,6 +953,9 @@ async def talking_photo(message: Message, state: FSMContext):
     try:
         from .maxbot import TG_PHOTOS  # чтобы фото можно было переслать и клиентке в MAX
         TG_PHOTOS[(message.chat.id, message.message_id)] = message.photo[-1].file_id
+        if config.DEMO and client["tg_id"] != message.from_user.id:
+            await message.answer("👀 Демо: в настоящем салоне это фото получил бы клиент.", reply_markup=CHAT_KB)
+            return
         await message.bot.copy_message(client["tg_id"], message.chat.id, message.message_id)
         db.log_message(client["id"], "out", message.caption or "", photo=message.photo[-1].file_id,
                        author=author_name(message.from_user))
@@ -998,6 +1014,10 @@ async def client_photo(message: Message):
             sent = True
         except Exception as e:
             log.warning("photo forward: %s", e)
+    if config.DEMO and not sent:
+        await message.answer("👀 <i>Демо:</i> в настоящем салоне фото пришло бы владельцу и мастеру с кнопкой «Ответить».",
+                             reply_markup=MENU)
+        return
     await message.answer("Фото передано ✅" if sent else "Не получилось передать фото, попробуйте позже.",
                          reply_markup=MENU)
 
@@ -1021,6 +1041,11 @@ async def client_text(message: Message):
             db.add_relay(a["tg_id"], m.message_id, client["id"])
         except Exception as e:
             log.warning("relay to admin: %s", e)
+    if config.DEMO and not db.admins():
+        await message.answer("👀 <i>Демо:</i> в настоящем салоне это сообщение сразу пришло бы владельцу "
+                             "с кнопкой «💬 Ответить», а его ответ — вам сюда. Переписку видно в кабинете → «Чаты» "
+                             "(роль владельца — /demo).", reply_markup=MENU)
+        return
     if not live:  # во время живого разговора не повторяем автоответ
         await message.answer(
             "Спасибо! Я передал ваше сообщение администратору салона — вам ответят здесь же, в этом чате 💌\n\n"

@@ -1,17 +1,23 @@
 """Уведомления: мастеру, владельцу салона и клиентам."""
 import html
 import logging
+from contextvars import ContextVar
 
 from aiogram import Bot
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from . import db
+from . import config, db
 from .niche import N
 from .texts import start_human
 
 log = logging.getLogger("notify")
 bot: Bot | None = None  # задаётся при запуске
+# Демо-салон: кто сейчас нажимает кнопки. Сообщения «другим людям» в демо уходят ему самому —
+# посетители демо не могут писать друг другу от имени салона.
+ACTOR: ContextVar[int | None] = ContextVar("actor", default=None)
+DEMO_CLIENT = "👀 <i>Демо: это сообщение получил бы клиент</i>\n\n"
+DEMO_STAFF = "👀 <i>Демо: так это сообщение увидят мастер и владелец</i>\n\n"
 
 
 class MCancel(CallbackData, prefix="mc"):
@@ -25,6 +31,10 @@ class CCancel(CallbackData, prefix="cc"):
 
 
 async def send(chat_id: int | None, text: str, kb=None) -> bool:
+    if config.DEMO:
+        actor = ACTOR.get()
+        if actor and chat_id != actor:
+            chat_id, text, kb = actor, DEMO_CLIENT + text, None
     if not chat_id or bot is None:
         return False
     try:
@@ -61,6 +71,7 @@ async def staff_new_booking(b: dict):
             f"👤 {b['client_name']}{contact}{note}")
     for chat in staff_chats(b):
         await send(chat, text, kb)
+    await demo_staff_echo(text)
 
 
 async def staff_cancelled_by_client(b: dict):
@@ -70,6 +81,19 @@ async def staff_cancelled_by_client(b: dict):
             f"Время снова свободно для записи.")
     for chat in staff_chats(b):
         await send(chat, text)
+    await demo_staff_echo(text)
+
+
+async def demo_staff_echo(text: str):
+    """Демо: показать посетителю-клиенту, что получил бы мастер (настоящих сотрудников в демо нет)."""
+    actor = ACTOR.get()
+    if not (config.DEMO and actor and bot):
+        return
+    try:
+        await bot.send_message(actor, DEMO_STAFF + text +
+                               f"\n\n💡 Хотите так же у себя? Пишите → @{config.LOG_OWNER}")
+    except Exception as e:
+        log.warning("demo echo: %s", e)
 
 
 async def client_cancelled_by_salon(b: dict):

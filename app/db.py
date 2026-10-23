@@ -5,6 +5,7 @@ import sqlite3
 import threading
 from datetime import datetime
 
+from . import config
 from .config import DB_PATH, SHARED_DIR, TZ
 from .niche import N
 
@@ -120,6 +121,10 @@ CREATE TABLE IF NOT EXISTS reviews (            -- отзывы клиентов
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_reviews_master ON reviews(master_id, id);
+CREATE TABLE IF NOT EXISTS demo_roles (         -- демо-салон: кем посетитель решил себя попробовать
+    tg_id INTEGER PRIMARY KEY,
+    role  TEXT NOT NULL                       -- client | owner | master
+);
 """
 
 DEFAULT_SETTINGS = {
@@ -236,10 +241,23 @@ def dev_mode(tg_id: int) -> str | None:
     return (one("SELECT value FROM settings WHERE key='dev_mode'") or {}).get("value") or None
 
 
+def demo_role(tg_id: int) -> str:
+    if not config.DEMO or not tg_id:
+        return ""
+    r = one("SELECT role FROM demo_roles WHERE tg_id=?", (tg_id,))
+    return r["role"] if r else ""
+
+
+def set_demo_role(tg_id: int, role: str):
+    ex("INSERT OR REPLACE INTO demo_roles (tg_id, role) VALUES (?,?)", (tg_id, role))
+
+
 def is_admin(tg_id: int) -> bool:
     mode = dev_mode(tg_id)
     if mode:
         return mode == "owner"
+    if config.DEMO:
+        return demo_role(tg_id) == "owner"
     return one("SELECT 1 FROM admins WHERE tg_id=?", (tg_id,)) is not None
 
 
@@ -267,6 +285,11 @@ def master_by_tg(tg_id: int) -> dict | None:
             return None
         m = one("SELECT * FROM masters WHERE id=? AND active=1", (int(mode.split(":")[1]),))
         return {**m, "tg_id": tg_id} if m else None   # разработчик «в шкуре» этого мастера
+    if config.DEMO:
+        if demo_role(tg_id) != "master":
+            return None
+        m = one("SELECT * FROM masters WHERE active=1 ORDER BY id LIMIT 1")
+        return {**m, "tg_id": tg_id} if m else None   # демо: посетитель смотрит глазами первого мастера
     return one("SELECT * FROM masters WHERE tg_id=? AND active=1", (tg_id,))
 
 

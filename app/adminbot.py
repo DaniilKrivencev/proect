@@ -34,6 +34,7 @@ START_SALON = None
 
 DISABLE_SALON = ENABLE_SALON = REMOVE_SALON = None
 BACKUP = None  # полная копия сервиса (manager.make_backup)
+SET_DEMO = None  # async (slug, on) — включить/выключить демо-режим и перезапустить салон
 
 
 class AddSalon(StatesGroup):
@@ -99,7 +100,7 @@ def _salons() -> list[dict]:
             bot = json.loads((d / "status.json").read_text(encoding="utf-8")).get("bot") or ""
         except Exception:
             pass
-        out.append({"slug": d.name, "name": cfg.get("NAME", d.name), "disabled": cfg.get("DISABLED") == "1",
+        out.append({"slug": d.name, "name": cfg.get("NAME", d.name), "disabled": cfg.get("DISABLED") == "1", "demo": cfg.get("DEMO") == "1",
                     "db": d / (cfg.get("DB_FILE") or "lunka.db"), "bot": bot})
     return out
 
@@ -202,10 +203,15 @@ async def pick_salon(cb: CallbackQuery):
             [_btn(ROLES["owner"], f"dv:r:{slug}:owner")],
             [_btn(ROLES["master"], f"dv:m:{slug}")],
             [_btn("👑 Владелец салона", f"dv:own:{slug}")],
-            [_btn("🧹 Подготовить к выдаче заказчику", f"dv:clean:{slug}")],
+            *([[_btn("🔄 Сбросить демо сейчас", f"dv:dreset:{slug}")],
+               [_btn("📸 Запомнить как эталон демо", f"dv:dsnap:{slug}")],
+               [_btn("🧪 Выключить демо-режим", f"dv:demo:{slug}")]] if s["demo"] else
+              [[_btn("🧹 Подготовить к выдаче заказчику", f"dv:clean:{slug}")],
+               [_btn("🧪 Сделать демо-салоном", f"dv:demo:{slug}")]]),
             [_btn("⏸ Отключить", f"dv:off:{slug}"), _btn("🗑 Удалить", f"dv:del:{slug}")],
             [_btn("◀️ Назад", "dv:home")]]
-    await cb.message.edit_text(f"Салон «{s['name']}». В какой роли войти?", reply_markup=_kb(rows))
+    title = f"🧪 Демо-салон «{s['name']}»" if s["demo"] else f"Салон «{s['name']}»"
+    await cb.message.edit_text(f"{title}. В какой роли войти?", reply_markup=_kb(rows))
 
 
 @router.callback_query(F.data.startswith("dv:m:"))
@@ -654,10 +660,11 @@ def check_pin(pin: str) -> bool:
     return bool(d.get("pin_hash")) and _secrets.compare_digest(_pin_hash(pin, d.get("pin_salt", "")), d["pin_hash"])
 
 
-ACTIONS = {"off": "⏸ отключить", "on": "▶️ включить", "del": "🗑 удалить", "clean": "🧹 очистить от тестовых данных"}
+ACTIONS = {"off": "⏸ отключить", "on": "▶️ включить", "del": "🗑 удалить", "clean": "🧹 очистить от тестовых данных",
+           "demo": "🧪 переключить демо-режим"}
 
 
-@router.callback_query(F.data.regexp(r"^dv:(off|on|del|clean):"))
+@router.callback_query(F.data.regexp(r"^dv:(off|on|del|clean|demo):"))
 async def danger_start(cb: CallbackQuery, state: FSMContext):
     if not _allowed(cb):
         await cb.answer()
@@ -737,6 +744,18 @@ async def danger_pin(message: Message, state: FSMContext):
     if not s:
         await state.clear()
         await message.answer("Салон не найден.")
+        return
+    if d["action"] == "demo":
+        await state.clear()
+        on = not s["demo"]
+        await SET_DEMO(s["slug"], on)
+        await message.answer(
+            (f"🧪 «{html.escape(s['name'])}» теперь демо-салон. Через пару секунд бот перезапустится и сам заполнится: "
+             "3 мастера, отзывы, записи на неделю. Любой, кто откроет бота, выберет роль — клиент, владелец или мастер.\n\n"
+             "Каждую ночь в 04:00 всё возвращается к эталону. Хотите свой вид (прайс, мастера) — войдите как хозяин, "
+             "настройте и нажмите «📸 Запомнить как эталон демо».") if on else
+            f"Демо-режим у «{html.escape(s['name'])}» выключен, салон перезапущен как обычный.",
+            reply_markup=_kb([[_btn("◀️ К салону", f"dv:s:{s['slug']}")]]))
         return
     if d["action"] == "clean":
         await state.set_state(Danger.clean_choice)
@@ -870,3 +889,22 @@ async def clean_go(cb: CallbackQuery, state: FSMContext):
         (f"\nКопия до очистки: <code>backups/{backup}</code>" if backup else "") +
         "\n\n<b>Теперь назначьте владельца</b> — как работает заказчик?",
         reply_markup=_owner_kb(s["slug"], solo_ok=n_masters <= 1))
+
+
+# ======================================================================
+#  🧪 Демо-салон: сброс и эталон (салон сам подхватит флаг в течение минуты)
+# ======================================================================
+@router.callback_query(F.data.regexp(r"^dv:(dreset|dsnap):"))
+async def demo_flags(cb: CallbackQuery):
+    if not _allowed(cb):
+        await cb.answer()
+        return
+    _, what, slug = cb.data.split(":", 2)
+    s = _salon(slug)
+    if not s or not s["demo"]:
+        await cb.answer("Это не демо-салон", show_alert=True)
+        return
+    flag = TENANTS / slug / ("demo_reset.flag" if what == "dreset" else "demo_snapshot.flag")
+    flag.write_text("1", encoding="utf-8")
+    await cb.answer("🔄 Сброшу в течение минуты" if what == "dreset" else
+                    "📸 Запомню текущий вид как эталон в течение минуты", show_alert=True)

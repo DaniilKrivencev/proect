@@ -75,6 +75,8 @@ async def main():
 
     db.init()
     applog.install()
+    from app import demo
+    demo.ensure_ready()
 
     if not config.runtime["webapp_url"] and config.TUNNEL == "auto":
         log.info("Запускаю туннель для кабинета мастера…")
@@ -107,6 +109,8 @@ async def main():
 
     dp = Dispatcher(storage=MemoryStorage())
     from app import reviews
+    dp.update.outer_middleware(demo.actor_mw)  # демо: «кто нажал» — для сообщений другим людям
+    dp.include_router(demo.router)
     dp.include_router(reviews.router)  # раньше основного: шаги отзыва не должны уходить администратору
     dp.include_router(bot_module.router)
 

@@ -644,7 +644,7 @@ class Runner:
 
     def env(self) -> dict:
         e = dict(os.environ)
-        for k in ("BOT_TOKEN", "MAX_BOT_TOKEN", "PORT", "NICHE", "NICHE_TITLE", "NICHE_EMOJI", "WEBAPP_URL", "DB_FILE", "DISABLED"):
+        for k in ("BOT_TOKEN", "MAX_BOT_TOKEN", "PORT", "NICHE", "NICHE_TITLE", "NICHE_EMOJI", "WEBAPP_URL", "DB_FILE", "DISABLED", "DEMO"):
             e.pop(k, None)  # ничего не наследуем от соседей — только из своего tenant.env
         e.update(LUNKA_TENANT_DIR=str(TENANTS / self.slug), LUNKA_TENANT=self.slug,
                  PYTHONUTF8="1", PYTHONUNBUFFERED="1")
@@ -775,6 +775,19 @@ async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
     adminbot.ENABLE_SALON = enable
     adminbot.REMOVE_SALON = remove
     adminbot.BACKUP = lambda: make_backup(quiet=True)
+
+    async def set_demo(slug: str, on: bool):
+        cfg = tenants()[slug]
+        cfg.pop("DEMO", None)
+        if on:
+            cfg["DEMO"] = "1"
+        write_tenant(slug, cfg)
+        stop_salon(slug)
+        await asyncio.sleep(2)
+        await start_new(slug, announce=False)
+        log(f"🧪 Салон [{slug}]: демо-режим {'включён' if on else 'выключен'}")
+
+    adminbot.SET_DEMO = set_demo
     try:
         await asyncio.gather(applog.run(listen=True), adminbot.run(), supportbot.run(), nightly_backups(log),
                              *(r.run(log) for r in runners.values()))

@@ -168,6 +168,8 @@ async function loadMe() {
   $("salonName").textContent = me.salon.salon_name;
   document.title = me.salon.salon_name + " — кабинет";
   $("pAbout").placeholder = PH().about;
+  $("demoBar").hidden = !me.demo;
+  if (me.demo) $("demoContact").onclick = (e) => { e.preventDefault(); tg ? tg.openTelegramLink(me.demo_contact) : window.open(me.demo_contact); };
   document.querySelectorAll(".help-btn").forEach((b) => {
     b.hidden = !me.help_url;
     b.onclick = () => (tg ? tg.openTelegramLink(me.help_url) : window.open(me.help_url));

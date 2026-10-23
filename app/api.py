@@ -41,7 +41,7 @@ def current_user(response: Response, x_init_data: str = Header(default=""), x_lo
         tg_id = data.user.id
         name = " ".join(filter(None, [data.user.first_name, data.user.last_name]))
     support = bool(db.dev_mode(tg_id))  # техподдержка: телефоны клиентов ей не показываем
-    if support:
+    if support or config.DEMO:  # в демо телефоны посетителей скрыты от всех
         response.headers["x-support"] = "1"
     if db.is_admin(tg_id):
         if not name:
@@ -88,6 +88,42 @@ async def hide_phones_from_support(request: Request, call_next):
         pass
     headers = {k: v for k, v in response.headers.items() if k.lower() not in ("content-length", "x-support")}
     return Response(body, status_code=response.status_code, headers=headers, media_type="application/json")
+
+
+# ---------- демо-салон: что посетителям нельзя и «кто нажал» ----------
+import re as _re  # noqa: E402
+
+from starlette.responses import JSONResponse  # noqa: E402
+
+DEMO_BLOCKED = [("POST", r"/api/mode"), ("GET", r"/api/admin_invite"), ("POST", r"/api/masters/\d+/new_invite"),
+                ("POST", r"/api/reviews"), ("PUT", r"/api/salon")]
+
+
+def _uid_from_headers(request: Request) -> int | None:
+    try:
+        if request.headers.get("x-login"):
+            return db.login_user(request.headers["x-login"])
+        data = safe_parse_webapp_init_data(token=BOT_TOKEN, init_data=request.headers.get("x-init-data", ""))
+        return data.user.id if data.user else None
+    except Exception:
+        return None
+
+
+@app.middleware("http")
+async def demo_guard(request: Request, call_next):
+    if not config.DEMO or not request.url.path.startswith("/api/") or request.url.path.startswith("/api/public/"):
+        return await call_next(request)
+    uid = _uid_from_headers(request)
+    if not db.dev_mode(uid or 0):  # разработчик в демо может всё (настроить эталон)
+        m = request.method
+        if m == "DELETE" or any(m == bm and _re.fullmatch(bp, request.url.path) for bm, bp in DEMO_BLOCKED):
+            return JSONResponse({"detail": "В демо-версии это отключено 🙂 В вашем салоне — будет работать."},
+                                status_code=403)
+    token = notify.ACTOR.set(uid)
+    try:
+        return await call_next(request)
+    finally:
+        notify.ACTOR.reset(token)
 
 
 def admin_only(u=Depends(current_user)) -> dict:
@@ -140,7 +176,8 @@ def me(u=Depends(current_user)):
             "link_max": f"https://max.ru/{runtime['max_username']}" if runtime.get("max_username") else "", "today": now.date().isoformat(),
             "unread_chats": unread if u["role"] == "admin" else 0,
             "support_access": bool(db.dev_id()) if u["role"] == "admin" else False,
-            "help_url": config.support_url("owner" if u["role"] == "admin" else "master"),
+            "help_url": "" if config.DEMO else config.support_url("owner" if u["role"] == "admin" else "master"),
+            "demo": config.DEMO, "demo_contact": f"https://t.me/{config.LOG_OWNER}" if config.DEMO else "",
             "stats": {"month_revenue": stats["revenue"], "month_visits": stats["visits"],
                       "upcoming": upcoming["n"], "clients": clients["n"], "masters": len(db.masters())}}
 
