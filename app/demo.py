@@ -345,3 +345,30 @@ def tick():
     if time.time() - _state["last_clean"] > 3600:
         _state["last_clean"] = time.time()
         clean_idle()
+
+
+def find_sandbox(check) -> sqlite3.Connection | None:
+    """Песочница, где check() что-то находит (для публичной страницы отзыва в демо)."""
+    if not SANDBOXES.exists():
+        return None
+    for f in SANDBOXES.glob("*.db"):
+        if not f.stem.lstrip("-").isdigit():
+            continue
+        uid = int(f.stem)
+        c = _open.get(uid)
+        temp = c is None
+        if temp:  # не держим открытыми чужие песочницы ради одной проверки
+            c = sqlite3.connect(f, check_same_thread=False)
+            c.row_factory = sqlite3.Row
+        tok = db.use_conn(c)
+        try:
+            found = bool(check())
+        except sqlite3.Error:
+            found = False
+        finally:
+            db.reset_conn(tok)
+            if temp:
+                c.close()
+        if found:
+            return sandbox_for(uid)
+    return None

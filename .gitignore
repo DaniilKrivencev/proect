@@ -14,3 +14,4 @@ tenants_old_*/
 *.log
 logins.json
 Caddyfile
+archive/

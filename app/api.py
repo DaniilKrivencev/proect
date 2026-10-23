@@ -716,6 +716,12 @@ class PublicReviewIn(BaseModel):
 
 def _public_booking(token: str) -> dict:
     b = db.booking_by_review_token(token)
+    if not b and config.DEMO:  # демо: запись лежит в песочнице посетителя
+        from .demo import find_sandbox
+        c = find_sandbox(lambda: db.booking_by_review_token(token))
+        if c is not None:
+            db.use_conn(c)  # до конца этого запроса работаем с его песочницей
+            b = db.booking_by_review_token(token)
     if not b or b["status"] != "active":
         raise HTTPException(404, "Ссылка не найдена — попросите у салона новую")
     return b
@@ -759,6 +765,8 @@ def review_photo(name: str):
     if not PHOTO_RE.match(name) or not path.is_file():
         raise HTTPException(404, "Фото не найдено")
     r = db.one("SELECT hidden FROM reviews WHERE photo=?", (name,))
+    if config.DEMO and not r:  # демо: отзыв в песочнице посетителя — имя файла случайное, показываем
+        r = {"hidden": 0}
     if not r or r["hidden"]:
         raise HTTPException(404, "Фото не найдено")
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})

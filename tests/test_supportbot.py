@@ -87,6 +87,12 @@ async def main():
     s.sent.clear()
     await dp.feed_update(bot, msg(OP, "просто текст"))
     assert not [x for x in s.sent if x[0] == "CopyMessage"] and "свайпните" in s.sent[-1][2]
+    # Папка салона с дефисом (stil-i-ya) тоже распознаётся
+    (supportbot.TENANTS / "stil-i-ya").mkdir()
+    (supportbot.TENANTS / "stil-i-ya" / "tenant.env").write_text("NAME=Стиль\n", encoding="utf-8")
+    s.sent.clear()
+    await dp.feed_update(bot, msg(999, "/start stil-i-ya-master"))
+    assert "Стиль" in s.sent[-1][2], s.sent
     # Чужая роль в ссылке не ломает бота
     await dp.feed_update(bot, msg(888, "/start ../etc-owner"))
     print("✅ Бот поддержки: обращения доходят оператору с салоном и ролью, ответ свайпом возвращается человеку")

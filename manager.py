@@ -723,7 +723,7 @@ async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
     applog.STATUS_PROVIDER = lambda: status_text(runners)
 
     def log(text: str):
-        print(re.sub(r"<[^>]+>", "", text), flush=True)
+        print(html.unescape(re.sub(r"<[^>]+>", "", text)), flush=True)
         applog.send_sync(text)
 
     print("\n" + "=" * 60)
@@ -788,6 +788,11 @@ async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
         log(f"🧪 Салон [{slug}]: демо-режим {'включён' if on else 'выключен'}")
 
     adminbot.SET_DEMO = set_demo
+    import signal
+    try:  # systemctl stop/restart шлёт SIGTERM — гасим салоны аккуратно, а не бросаем их работать сиротами
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, asyncio.current_task().cancel)
+    except (NotImplementedError, RuntimeError, AttributeError):
+        pass  # Windows: там окно закрывают вместе с процессами
     try:
         await asyncio.gather(applog.run(listen=True), adminbot.run(), supportbot.run(), nightly_backups(log),
                              *(r.run(log) for r in runners.values()))
@@ -796,6 +801,15 @@ async def supervise(ts: dict[str, dict], runners_out: dict | None = None):
             r.stop()
         for t in started:
             t.cancel()
+        for r in runners.values():
+            if r.proc and r.proc.returncode is None:
+                try:
+                    await asyncio.wait_for(r.proc.wait(), 8)
+                except Exception:
+                    try:
+                        r.proc.kill()
+                    except ProcessLookupError:
+                        pass
 
 
 def main():
@@ -852,7 +866,7 @@ def main():
     write_caddy(ts)
     try:
         asyncio.run(supervise(ts))
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         print("Остановлено.")
 
 

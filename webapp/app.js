@@ -550,11 +550,11 @@ function openClient(c) {
 async function loadSalon() {
   await loadMe();
   loadServices().catch(fail);
-  api("api/admin_invite").then((r) => { $("adminList").textContent = "Сейчас: " + r.admins.join(", "); state.adminInvite = r.link; }).catch(() => {});
+  if (!state.me.demo) api("api/admin_invite").then((r) => { $("adminList").textContent = "Сейчас: " + r.admins.join(", "); state.adminInvite = r.link; }).catch(() => {});
   const s = state.me.salon;
   $("clientLink").textContent = state.me.link_max ? `Telegram: ${state.me.link}\nMAX: ${state.me.link_max}` : (state.me.link || "Ссылка появится, когда бот запущен");
   $("pName").value = s.salon_name; $("pAddress").value = s.address; $("pPhone").value = s.phone || ""; $("pAbout").value = s.about; $("pStep").value = String(s.slot_step); $("pReviews").value = s.reviews_link || "";
-  $("adminCard").hidden = isSolo();
+  $("adminCard").hidden = isSolo() || state.me.demo;
   $("hAbout").textContent = isSolo() ? "О вас" : "О салоне";
   $("lPhone").textContent = isSolo() ? "Телефон для клиентов" : "Телефон салона";
   renderMode();

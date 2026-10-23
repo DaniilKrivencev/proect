@@ -102,7 +102,7 @@ async def start(message: Message, command: CommandObject):
                              "Чтобы ответить — свайпните сообщение («Ответить») и напишите текст, можно с фото.")
         return
     slug, role = "", ""
-    m = re.fullmatch(r"([a-z0-9_]+)-(owner|master|client)", command.args or "")
+    m = re.fullmatch(r"([a-z0-9_-]+)-(owner|master|client)", command.args or "")
     if m and (TENANTS / m.group(1)).is_dir():
         slug, role = m.group(1), m.group(2)
     with _db() as c:

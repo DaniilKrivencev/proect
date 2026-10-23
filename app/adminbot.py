@@ -674,6 +674,16 @@ async def danger_start(cb: CallbackQuery, state: FSMContext):
     if not s:
         await cb.answer("Салон не найден", show_alert=True)
         return
+    if action == "demo" and not s["demo"]:
+        try:
+            with _db(s["db"]) as c:
+                busy = c.execute("SELECT (SELECT COUNT(*) FROM admins) + (SELECT COUNT(*) FROM clients)").fetchone()[0]
+        except sqlite3.Error:
+            busy = 0
+        if busy:
+            await cb.answer("Демо делается из НОВОГО пустого салона: у этого уже есть владелец или клиенты. "
+                            "Создайте отдельный салон («➕ Добавить салон») и сделайте демо из него.", show_alert=True)
+            return
     await cb.answer()
     if _time.time() < _fails["until"]:
         mins = int((_fails["until"] - _time.time()) // 60) + 1

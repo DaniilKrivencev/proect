@@ -122,6 +122,25 @@ async def main():
     assert tc.post(f"/api/chats/{cid}", headers=H, json={"text": "Есть, в 15:00"}).status_code == 200
     assert session.sent and session.sent[-1][0] == B and "Есть, в 15:00" in session.sent[-1][2]
 
+    # 4б. «Попросить отзыв» в песочнице: публичная страница находит запись посетителя, фото открывается
+    from app.config import runtime
+    runtime["webapp_url"] = "https://demo.example"
+    past = in_box(B, lambda: db.one("SELECT id FROM bookings WHERE start<? AND status='active' "
+                                    "AND id NOT IN (SELECT booking_id FROM reviews) LIMIT 1", (db.now_str(),)))
+    if not past:
+        mid_b = in_box(B, lambda: db.masters()[0]["id"])
+        past = {"id": in_box(B, lambda: db.ex("INSERT INTO bookings (master_id, client_id, service_name, start, duration, created_at) "
+                                               "VALUES (?,?,?,?,?,?)", (mid_b, cid, "x", "2026-01-01 10:00", 60, db.now_str())))}
+    link = tc.get(f"/api/bookings/{past['id']}/review_link", headers=H).json()["link"]
+    t = link.split("t=")[1]
+    assert tc.get(f"/api/public/review/{t}").status_code == 200
+    import base64
+    ph = "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xff\xe0demo").decode()
+    assert tc.post(f"/api/public/review/{t}", json={"rating": 5, "text": "супер", "photo": ph}).status_code == 200
+    name = in_box(B, lambda: db.one("SELECT photo FROM reviews WHERE booking_id=?", (past["id"],))["photo"])
+    assert name and tc.get(f"/r/{name}").status_code == 200
+    assert not db.q("SELECT 1 FROM reviews WHERE text='супер'"), "отзыв попал в общий салон"
+
     # 5. Уведомление «мастеру» о записи вымышленной клиентки приходит самому посетителю
     b = in_box(B, lambda: db.one(db.BOOKING_SQL + " WHERE b.start>=? LIMIT 1", (db.now_str(),)))
     session.sent.clear()
