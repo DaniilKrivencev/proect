@@ -1,14 +1,17 @@
 """Демо-салон (DEMO=1 в tenant.env): будущие заказчики сами пробуют сервис.
 
-• Посетитель выбирает, кем попробовать: клиентом, владельцем или мастером (/demo — сменить роль).
-• Настоящих сотрудников нет: то, что получили бы мастер и владелец, бот показывает самому посетителю.
-• Сообщения «другим людям» (ответ в чате, отмена записи салоном…) уходят тому, кто нажал, — посетители
-  не могут писать друг другу от имени салона. Телефоны в кабинете скрыты.
-• Каждую ночь в 04:00 салон возвращается к эталону (снимок базы), записи на неделю создаются заново.
+• У КАЖДОГО посетителя своя копия салона (песочница: tenants/<демо>/demo_users/<id>.db) — копия эталона
+  с мастерами, прайсом, отзывами и записями на неделю. Посетители друг друга не видят и не мешают:
+  можно менять цены, мастеров, отменять записи — всё только у себя.
+• Посетитель выбирает, кем попробовать: клиентом, владельцем или мастером (/demo — сменить роль
+  или начать заново). Что получили бы мастер и владелец, бот показывает самому посетителю.
+• Песочницы без активности сутки удаляются. Эталон (общий салон) правит только разработчик.
 """
 import logging
 import random
 import sqlite3
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta
 
 from aiogram import F, Router
@@ -22,8 +25,12 @@ router = Router()
 SNAPSHOT = config.TENANT_DIR / "demo_snapshot.db"
 FLAG_RESET = config.TENANT_DIR / "demo_reset.flag"
 FLAG_SNAPSHOT = config.TENANT_DIR / "demo_snapshot.flag"
+SANDBOXES = config.TENANT_DIR / "demo_users"
 RESET_HOUR = 4
-_state = {"last_reset": ""}
+IDLE_HOURS = 24          # песочницу без активности столько часов — удаляем
+MAX_OPEN = 100           # сколько песочниц держать открытыми одновременно
+_state = {"last_reset": "", "last_clean": 0.0}
+_open: "OrderedDict[int, sqlite3.Connection]" = OrderedDict()
 
 FAKE_CLIENTS = ["Алина", "Екатерина", "Ольга", "Дарья", "Ксения", "Виктория", "Светлана", "Юлия", "Марина", "Полина"]
 MASTERS = [("Анна", "Топ-мастер"), ("Мария", "Мастер"), ("Ольга", "Мастер, стаж 5 лет")]
@@ -47,7 +54,8 @@ def picker_kb():
     from .bot import btn, kb
     return kb([[btn("👤 Как клиент — записаться", "demo:client")],
                [btn("👑 Как владелец — кабинет салона", "demo:owner")],
-               [btn("✂️ Как мастер — что видит мастер", "demo:master")]] + contact_row())
+               [btn("✂️ Как мастер — что видит мастер", "demo:master")],
+               [btn("🔄 Начать демо заново", "demo:restart")]] + contact_row())
 
 
 async def show_picker(message: Message):
@@ -59,8 +67,8 @@ async def show_picker(message: Message):
         "👑 <b>Владелец</b> — кабинет: записи, мастера, клиенты, отзывы, выручка\n"
         "✂️ <b>Мастер</b> — свои записи, график и клиенты\n\n"
         "Сменить роль в любой момент — команда /demo\n\n"
-        "<i>Это общая демо-площадка: данные видят другие посетители и стираются каждую ночь, "
-        "телефоны скрыты.</i>",
+        "<i>Это ваша личная копия салона: меняйте что угодно — другие посетители её не видят. "
+        "Начать с чистого листа — «🔄 Начать демо заново».</i>",
         reply_markup=picker_kb())
 
 
@@ -77,6 +85,15 @@ async def pick(cb: CallbackQuery):
         return
     from . import bot as b
     role = cb.data.split(":", 1)[1]
+    if role == "restart":
+        drop_sandbox(cb.from_user.id)
+        await cb.answer("Готово — всё как в начале")
+        tok = db.use_conn(sandbox_for(cb.from_user.id))  # новая чистая копия
+        try:
+            await show_picker(cb.message)
+        finally:
+            db.reset_conn(tok)
+        return
     if role not in ("client", "owner", "master"):
         await cb.answer()
         return
@@ -102,13 +119,95 @@ async def pick(cb: CallbackQuery):
 
 
 async def actor_mw(handler, event, data):
-    """Запоминаем, кто нажал, — чтобы в демо сообщения «другим» уходили ему самому."""
+    """Кто нажал: в демо — его песочница и «сообщения другим» уходят ему самому."""
     user = data.get("event_from_user")
-    token = notify.ACTOR.set(user.id if user else None)
+    uid = user.id if user else None
+    token = notify.ACTOR.set(uid)
+    ctoken = db.use_conn(sandbox_for(uid))
     try:
         return await handler(event, data)
     finally:
+        db.reset_conn(ctoken)
         notify.ACTOR.reset(token)
+
+
+# ======================================================================
+#  Песочницы посетителей
+# ======================================================================
+def sandbox_for(uid: int | None) -> sqlite3.Connection | None:
+    """Песочница посетителя; None — работать с общей базой (не демо, нет человека, разработчик)."""
+    if not config.DEMO or not uid or db.dev_mode(uid):
+        return None
+    c = _open.get(uid)
+    if c is not None:
+        _open.move_to_end(uid)
+        return c
+    SANDBOXES.mkdir(exist_ok=True)
+    path = SANDBOXES / f"{uid}.db"
+    fresh = not path.exists()
+    if fresh:
+        dst = sqlite3.connect(path)
+        try:
+            if SNAPSHOT.exists():
+                src = sqlite3.connect(SNAPSHOT)
+                src.backup(dst)
+                src.close()
+            else:
+                db._conn.backup(dst)
+        finally:
+            dst.close()
+    c = db.open_db(path, seed_services=False)
+    if fresh:
+        tok = db.use_conn(c)
+        try:
+            for sql in ("DELETE FROM demo_roles", "DELETE FROM messages", "DELETE FROM relay", "DELETE FROM logins",
+                        "DELETE FROM admins", "UPDATE masters SET tg_id=NULL",
+                        "DELETE FROM settings WHERE key IN ('dev_mode','owner_username','owner_code','admin_invite')"):
+                db.ex(sql)
+            db.ex("DELETE FROM bookings WHERE start>=?", (db.now_str(),))
+            seed_bookings()
+        finally:
+            db.reset_conn(tok)
+    _open[uid] = c
+    while len(_open) > MAX_OPEN:
+        _, old = _open.popitem(last=False)
+        old.close()
+    return c
+
+
+def drop_sandbox(uid: int):
+    c = _open.pop(uid, None)
+    if c is not None:
+        c.close()
+    for suffix in ("", "-wal", "-shm"):
+        (SANDBOXES / f"{uid}.db{suffix}").unlink(missing_ok=True)
+
+
+def drop_all_sandboxes():
+    for uid in list(_open):
+        drop_sandbox(uid)
+    if SANDBOXES.exists():
+        for f in SANDBOXES.glob("*.db*"):
+            f.unlink(missing_ok=True)
+
+
+def clean_idle():
+    """Удалить песочницы, в которые давно не заходили."""
+    if not SANDBOXES.exists():
+        return
+    limit = time.time() - IDLE_HOURS * 3600
+    for f in SANDBOXES.glob("*.db"):
+        try:
+            idle = max(p.stat().st_mtime for p in (f, f.with_name(f.name + "-wal")) if p.exists()) < limit
+        except OSError:
+            continue
+        if idle and f.stem.lstrip("-").isdigit():
+            drop_sandbox(int(f.stem))
+
+
+def active_sandboxes() -> list[sqlite3.Connection]:
+    """Открытые песочницы — для напоминаний и просьб об отзыве (посетитель получит их по своей записи)."""
+    return list(_open.values())
 
 
 # ======================================================================
@@ -236,7 +335,13 @@ def tick():
         seed_bookings()
     now = db.now_local()
     today = now.date().isoformat()
-    if FLAG_RESET.exists() or (now.hour == RESET_HOUR and _state["last_reset"] != today):
+    if FLAG_RESET.exists():  # «🔄 Сбросить демо сейчас» — эталон и все песочницы с нуля
         FLAG_RESET.unlink(missing_ok=True)
-        _state["last_reset"] = today
         reset()
+        drop_all_sandboxes()
+    if now.hour == RESET_HOUR and _state["last_reset"] != today:
+        _state["last_reset"] = today
+        reset()  # общий салон (эталон) — свежие записи на неделю
+    if time.time() - _state["last_clean"] > 3600:
+        _state["last_clean"] = time.time()
+        clean_idle()

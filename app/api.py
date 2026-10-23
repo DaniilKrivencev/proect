@@ -41,7 +41,7 @@ def current_user(response: Response, x_init_data: str = Header(default=""), x_lo
         tg_id = data.user.id
         name = " ".join(filter(None, [data.user.first_name, data.user.last_name]))
     support = bool(db.dev_mode(tg_id))  # техподдержка: телефоны клиентов ей не показываем
-    if support or config.DEMO:  # в демо телефоны посетителей скрыты от всех
+    if support:
         response.headers["x-support"] = "1"
     if db.is_admin(tg_id):
         if not name:
@@ -95,8 +95,8 @@ import re as _re  # noqa: E402
 
 from starlette.responses import JSONResponse  # noqa: E402
 
-DEMO_BLOCKED = [("POST", r"/api/mode"), ("GET", r"/api/admin_invite"), ("POST", r"/api/masters/\d+/new_invite"),
-                ("POST", r"/api/reviews"), ("PUT", r"/api/salon")]
+# У каждого посетителя демо своя песочница — можно почти всё; закрыто только то, что ведёт наружу.
+DEMO_BLOCKED = [("GET", r"/api/admin_invite"), ("POST", r"/api/masters/\d+/new_invite")]
 
 
 def _uid_from_headers(request: Request) -> int | None:
@@ -116,13 +116,16 @@ async def demo_guard(request: Request, call_next):
     uid = _uid_from_headers(request)
     if not db.dev_mode(uid or 0):  # разработчик в демо может всё (настроить эталон)
         m = request.method
-        if m == "DELETE" or any(m == bm and _re.fullmatch(bp, request.url.path) for bm, bp in DEMO_BLOCKED):
+        if any(m == bm and _re.fullmatch(bp, request.url.path) for bm, bp in DEMO_BLOCKED):
             return JSONResponse({"detail": "В демо-версии это отключено 🙂 В вашем салоне — будет работать."},
                                 status_code=403)
+    from .demo import sandbox_for
     token = notify.ACTOR.set(uid)
+    ctoken = db.use_conn(sandbox_for(uid))
     try:
         return await call_next(request)
     finally:
+        db.reset_conn(ctoken)
         notify.ACTOR.reset(token)
 
 

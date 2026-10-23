@@ -11,6 +11,22 @@ from .niche import N
 
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
+# Демо-салон: у каждого посетителя своя копия базы — на время его запроса она подменяет общую.
+from contextvars import ContextVar  # noqa: E402
+_ctx_conn: ContextVar[sqlite3.Connection | None] = ContextVar("db_conn", default=None)
+
+
+def conn() -> sqlite3.Connection:
+    return _ctx_conn.get() or _conn
+
+
+def use_conn(c: sqlite3.Connection | None):
+    """Работать с другой базой до reset_conn(token) (песочница посетителя демо)."""
+    return _ctx_conn.set(c)
+
+
+def reset_conn(token):
+    _ctx_conn.reset(token)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -156,24 +172,29 @@ def now_str() -> str:
 
 def init(path=None):
     global _conn
-    _conn = sqlite3.connect(path or DB_PATH, check_same_thread=False)
-    _conn.row_factory = sqlite3.Row
-    _conn.execute("PRAGMA journal_mode=WAL")
-    _conn.executescript(SCHEMA)
+    _conn = open_db(path or DB_PATH)
+
+
+def open_db(path, seed_services: bool = True) -> sqlite3.Connection:
+    c = sqlite3.connect(path, check_same_thread=False)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.executescript(SCHEMA)
     for sql in MIGRATIONS:  # новые колонки для баз из прошлых версий
         try:
-            _conn.execute(sql)
+            c.execute(sql)
             if "review_asked" in sql:  # колонка появилась только что: о старых визитах отзыв не просим
-                _conn.execute("UPDATE bookings SET review_asked=1 WHERE start<?", (now_str(),))
+                c.execute("UPDATE bookings SET review_asked=1 WHERE start<?", (now_str(),))
         except sqlite3.OperationalError:
             pass  # колонка уже есть
     for k, v in DEFAULT_SETTINGS.items():
-        _conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?,?)", (k, v))
-    if not _conn.execute("SELECT 1 FROM services LIMIT 1").fetchone():
+        c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?,?)", (k, v))
+    if seed_services and not c.execute("SELECT 1 FROM services LIMIT 1").fetchone():
         for name, price, dur, pfrom in DEFAULT_SERVICES:
-            _conn.execute("INSERT INTO services (name, price, duration, price_from) VALUES (?,?,?,?)",
-                          (name, price, dur, pfrom))
-    _conn.commit()
+            c.execute("INSERT INTO services (name, price, duration, price_from) VALUES (?,?,?,?)",
+                      (name, price, dur, pfrom))
+    c.commit()
+    return c
 
 
 MIGRATIONS = [
@@ -187,7 +208,7 @@ MIGRATIONS = [
 
 def q(sql: str, params=()) -> list[dict]:
     with _lock:
-        return [dict(r) for r in _conn.execute(sql, params).fetchall()]
+        return [dict(r) for r in conn().execute(sql, params).fetchall()]
 
 
 def one(sql: str, params=()) -> dict | None:
@@ -197,8 +218,9 @@ def one(sql: str, params=()) -> dict | None:
 
 def ex(sql: str, params=()) -> int:
     with _lock:
-        cur = _conn.execute(sql, params)
-        _conn.commit()
+        c = conn()
+        cur = c.execute(sql, params)
+        c.commit()
         return cur.lastrowid
 
 

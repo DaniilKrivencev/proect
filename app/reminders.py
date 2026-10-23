@@ -85,9 +85,16 @@ async def loop():
         try:
             await send_reminders()
             await send_digests()
-            from . import demo, reviews
+            from . import db, demo, reviews
             await reviews.send_requests()
             demo.tick()
+            for c in demo.active_sandboxes():  # демо: напоминания и просьба об отзыве по записям посетителя
+                tok = db.use_conn(c)
+                try:
+                    await send_reminders()
+                    await reviews.send_requests()
+                finally:
+                    db.reset_conn(tok)
         except Exception:
             log.exception("Ошибка в фоновых задачах")
         await asyncio.sleep(60)

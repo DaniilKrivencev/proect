@@ -1,4 +1,4 @@
-"""Демо-салон: роли, сообщения «другим» уходят самому посетителю, ограничения, ночной сброс. python -m tests.test_demo"""
+"""Демо-салон: у каждого посетителя своя песочница, друг другу не мешают. python -m tests.test_demo"""
 import asyncio
 import os
 import tempfile
@@ -60,11 +60,11 @@ JPEG = b"\xff\xd8\xff\xe0fakejpeg"
 
 
 
+
 async def main():
     db.init()
     demo.ensure_ready()
     assert len(db.masters()) == 3 and db.q("SELECT 1 FROM reviews"), "демо не заполнился"
-    assert db.one("SELECT 1 FROM bookings WHERE start>=?", (db.now_str(),)), "нет записей на неделю"
     assert demo.SNAPSHOT.exists()
     session = FakeSession()
     bot = Bot("123:TEST", session=session, default=DefaultBotProperties(parse_mode="HTML"))
@@ -75,68 +75,80 @@ async def main():
     dp.include_router(reviews.router)
     dp.include_router(bot_module.router)
     A, B = 301, 302
+    from types import SimpleNamespace
+    tc = TestClient(api.app)
+    who = {"id": A}
+    api.safe_parse_webapp_init_data = lambda token, init_data: SimpleNamespace(user=SimpleNamespace(id=who["id"], first_name="X", last_name=None))
+    H = {"X-Init-Data": "x"}
 
-    # 1. Новый посетитель видит выбор роли, а не «подключить салон»
+    def in_box(uid, fn):
+        tok = db.use_conn(demo.sandbox_for(uid))
+        try:
+            return fn()
+        finally:
+            db.reset_conn(tok)
+
+    # 1. Выбор роли, «подключить салон» не предлагается
     await dp.feed_update(bot, msg(A, "/start"))
     kbs = str(session.sent[-1][3])
     assert "demo:client" in kbs and "demo:owner" in kbs and "reg:" not in kbs
-    await dp.feed_update(bot, cb(A, "reg:salon"))
-    assert not db.admins()
-    # приглашения в демо не действуют
-    inv = db.masters()[0]["invite"]
-    await dp.feed_update(bot, msg(A, f"/start staff_{inv}"))
-    assert db.masters()[0]["tg_id"] is None
+    # 2. У каждого — своя копия с мастерами и записями на неделю
+    assert in_box(A, lambda: len(db.masters())) == 3 and in_box(B, lambda: len(db.masters())) == 3
+    assert in_box(B, lambda: db.one("SELECT 1 FROM bookings WHERE start>=?", (db.now_str(),)))
 
-    # 2. Клиент: B пишет салону — получает пояснение, никому не уходит
-    await dp.feed_update(bot, cb(B, "demo:client"))
-    assert not db.is_admin(B)
-    session.sent.clear()
-    await dp.feed_update(bot, msg(B, "Здравствуйте, есть окошко?"))
-    assert all(s[0] == B for s in session.sent) and "Демо" in session.sent[-1][2]
-    db.ex("UPDATE clients SET phone='+7 999 123-45-67' WHERE tg_id=?", (B,))
-
-    # 3. Владелец: кабинет, телефоны скрыты, опасное запрещено, ответ «другому» приходит самому
+    # 3. A — владелец: меняет всё у себя, B и общий салон не затронуты
     await dp.feed_update(bot, cb(A, "demo:owner"))
-    assert db.is_admin(A)
-    from types import SimpleNamespace
-    tc = TestClient(api.app)
-    api.safe_parse_webapp_init_data = lambda token, init_data: SimpleNamespace(user=SimpleNamespace(id=A, first_name="А", last_name=None))
-    H = {"X-Init-Data": "x"}
+    await dp.feed_update(bot, cb(B, "demo:client"))
+    assert in_box(A, lambda: db.is_admin(A)) and not in_box(B, lambda: db.is_admin(B))
     me = tc.get("/api/me", headers=H).json()
-    assert me["role"] == "admin" and me["demo"] is True
-    clients = tc.get("/api/clients", headers=H).json()
-    flat = str(clients)
-    assert "123-45-67" not in flat and "999" not in flat.replace("+7 900", ""), "телефон посетителя виден в демо"
+    assert me["role"] == "admin" and me["demo"] is True, me
+    mid = in_box(A, lambda: db.masters()[0]["id"])
+    assert tc.delete(f"/api/masters/{mid}", headers=H).status_code in (200, 409), "удаление мастера в своей песочнице"
+    sid = in_box(A, lambda: db.services()[0]["id"])
+    tc.delete(f"/api/services/{sid}", headers=H)
+    assert in_box(B, lambda: len(db.services())) == len(db.services()), "услуги B пострадали"
+    assert len(db.masters()) == 3, "общий салон изменился"
     assert tc.get("/api/admin_invite", headers=H).status_code == 403
-    assert tc.delete(f"/api/masters/{db.masters()[0]['id']}", headers=H).status_code == 403
-    assert tc.post("/api/mode", headers=H, json={"mode": "solo"}).status_code == 403
-    cid = db.one("SELECT id FROM clients WHERE tg_id=?", (B,))["id"]
+
+    # 4. B пишет «салону» — сообщение в ЕГО песочнице, A его не видит
+    await dp.feed_update(bot, msg(B, "Здравствуйте, есть окошко?"))
+    assert in_box(B, lambda: db.q("SELECT 1 FROM messages")) and not in_box(A, lambda: db.q("SELECT 1 FROM messages"))
+    assert tc.get("/api/chats", headers=H).json() in ([], {"chats": []}) or "окошко" not in str(tc.get("/api/chats", headers=H).json())
+    # B как владелец видит свою переписку и отвечает сам себе
+    await dp.feed_update(bot, cb(B, "demo:owner"))
+    who["id"] = B
+    cid = in_box(B, lambda: db.one("SELECT id FROM clients WHERE tg_id=?", (B,))["id"])
     session.sent.clear()
-    r = tc.post(f"/api/chats/{cid}", headers=H, json={"text": "Привет от салона"})
-    assert r.status_code == 200, r.text
-    assert session.sent and all(s[0] == A for s in session.sent), session.sent
-    assert "получил бы клиент" in session.sent[-1][2]
+    assert tc.post(f"/api/chats/{cid}", headers=H, json={"text": "Есть, в 15:00"}).status_code == 200
+    assert session.sent and session.sent[-1][0] == B and "Есть, в 15:00" in session.sent[-1][2]
 
-    # 4. Мастер смотрит глазами первого мастера
-    await dp.feed_update(bot, cb(A, "demo:master"))
-    assert db.master_by_tg(A)["id"] == db.masters()[0]["id"] and not db.is_admin(A)
-
-    # 5. Запись клиента: «уведомление мастеру» показывается самому клиенту
-    b = db.one(db.BOOKING_SQL + " WHERE b.start>=? LIMIT 1", (db.now_str(),))
+    # 5. Уведомление «мастеру» о записи вымышленной клиентки приходит самому посетителю
+    b = in_box(B, lambda: db.one(db.BOOKING_SQL + " WHERE b.start>=? LIMIT 1", (db.now_str(),)))
     session.sent.clear()
     tok = notify.ACTOR.set(B)
     await notify.staff_new_booking(b)
     notify.ACTOR.reset(tok)
     assert session.sent and session.sent[-1][0] == B and "мастер и владелец" in session.sent[-1][2]
 
-    # 6. Ночной сброс: следы посетителей стёрты, демо-данные и роли на месте
-    db.ex("UPDATE masters SET name='Испорчено' WHERE id=?", (db.masters()[0]["id"],))
-    demo.reset()
-    assert db.masters()[0]["name"] == "Анна"
-    assert not db.q("SELECT 1 FROM clients WHERE tg_id IS NOT NULL") and not db.q("SELECT 1 FROM messages")
-    assert db.demo_role(A) == "master" and db.demo_role(B) == "client"
-    assert db.one("SELECT 1 FROM bookings WHERE start>=?", (db.now_str(),))
-    print("✅ Демо-салон: выбор роли, сообщения не уходят другим, телефоны скрыты, опасное закрыто, ночной сброс")
+    # 6. «Начать заново» — копия как новая; мастер — глазами первого мастера
+    await dp.feed_update(bot, cb(A, "demo:restart"))
+    assert in_box(A, lambda: len(db.masters())) == 3 and not in_box(A, lambda: db.demo_role(A))
+    await dp.feed_update(bot, cb(A, "demo:master"))
+    assert in_box(A, lambda: db.master_by_tg(A))["name"] == "Анна"
+
+    # 7. 20 человек одновременно: у каждого своя роль и своя копия
+    users = list(range(1000, 1020))
+    await asyncio.gather(*(dp.feed_update(bot, cb(u, "demo:owner" if u % 2 else "demo:client")) for u in users))
+    for u in users:
+        assert in_box(u, lambda: db.demo_role(u)) == ("owner" if u % 2 else "client")
+        assert in_box(u, lambda: [r["tg_id"] for r in db.q("SELECT tg_id FROM demo_roles")]) == [u]
+    assert len(list(demo.SANDBOXES.glob("*.db"))) >= 22
+
+    # 8. Сброс из бота техподдержки — все песочницы заново; давние — удаляются
+    demo.FLAG_RESET.write_text("1")
+    demo.tick()
+    assert not list(demo.SANDBOXES.glob("*.db"))
+    print("✅ Демо: у каждого своя песочница — меняют что угодно, друг друга не видят и не мешают")
 
 
 asyncio.run(main())
