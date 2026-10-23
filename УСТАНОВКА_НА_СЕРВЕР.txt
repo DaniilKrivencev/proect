@@ -47,8 +47,11 @@
      .venv/bin/python manager.py
 
    Программа сама спросит: название салона, имя папки латиницей (zarina),
-   сферу (маникюр / парикмахерская), токен бота от @BotFather и токен
-   бота логов — и запустится.
+   сферу (маникюр / парикмахерская), токен бота от @BotFather, затем
+   (по желанию) токены бота логов, бота техподдержки и бота поддержки
+   «🆘» — и запустится. Пропущенный токен потом вписывается в /opt/lunka/.env:
+     LOG_BOT_TOKEN=…   ADMIN_BOT_TOKEN=…   SUPPORT_BOT_TOKEN=…
+   и systemctl restart lunka. Подробно про поддержку и демо — ДЕМО_И_ПОДДЕРЖКА.txt
    Ещё салон:    .venv/bin/python manager.py add
    Бот в MAX:    .venv/bin/python manager.py max
 
